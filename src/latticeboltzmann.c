@@ -26,33 +26,11 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <immintrin.h>
-
+#include <string.h>		// memcpy
+#include <time.h>			// clock_gettime
+#include <immintrin.h>	// vector intrinsics
 #define __USE_GNU
-#include <fenv.h>
-
-
-
-// Choose precision
-#define DOUBLEPREC 1
-#define MPI_REAL_T MPI_DOUBLE
-	typedef double real_t;
-//	#define VECWIDTH 1
-	#define AVX 1
-		#define VECWIDTH 4
-//	#define SSE 1
-//		#define VECWIDTH 2
-
-//#define SINGLEPREC 1
-//	typedef float real_t;
-//	#define AVX 1
-//		#define VECWIDTH 8
-//	#define SSE 1
-//		#define VECWIDTH 4
-//#define VECWIDTH 1
-
+#include <fenv.h>			// feenableexcept
 
 
 // d2q9 fixed parameters
@@ -60,22 +38,44 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 #define OMEGA0  (4.0/9.0)
 #define OMEGA14 (1.0/9.0)
 #define OMEGA58 (1.0/36.0)
-#define TAU 0.75
-#define CSQ (1.0)
 
 // Boundary condition. Wrap-around (periodic) or not (fluid flows out of the domain)
 #define WRAPAROUND 1
 
 // variable parameters
 #define NX 400
-#define NY 2000
-#define NTIMESTEPS 200000
-#define PRINTEVERY 1000
+#define NY 2001
+#define TAU 0.8
+#define CSQ (1.0)
+
+#define NTIMESTEPS 20000
+#define PRINTSTATSEVERY 1000
+#define SAVELATTICEEVERY 100
 #define ACCEL 0.005
 #define INITIALDENSITY 0.1
 
-// Macro for array indexing
-#define I(i,j, speed) ((speed)*NX*NY + (i)*NY + (j))
+
+// Choose precision and vectorization
+//#include "prec_double_avx.h"
+//#include "prec_double_sse.h"
+//#include "prec_double_serial.h"
+#include "prec_float_avx.h"
+//#include "prec_float_sse.h"
+//#include "prec_float_serial.h"
+
+
+
+// Macro for array indexing. We need the array stride to be such that we have correct
+// alignment for vector loads/stores on rows after the first.
+#define NYPADDED (ALIGNREQUIREMENT*((NY-1)/ALIGNREQUIREMENT)+ALIGNREQUIREMENT)
+#define I(i,j, speed) ((speed)*NX*NYPADDED + (i)*NYPADDED + (j))
+
+// Also store the multiple of VECWIDTH below NY, since the vectorized functions need to terminate here,
+// possibly with a scalar function cleaning up the "extra".
+#define NYVECMAX (4*(NY/4))
+
+// For approximate GFLOPs report: we do ~168 FLOP per lattice point
+#define FLOPPERLATTICEPOINT (168.0)
 
 
 
@@ -95,14 +95,20 @@ void Stream(
 	const int * restrict walls);
 
 void Collide(
+	const int jMin,
+	const int jMax,
 	real_t * restrict f,
 	const real_t * restrict fScratch,
 	const int * restrict walls);
 
-void CollideAVX(
+#if defined(AVX) || defined(SSE)
+void CollideVec(
+	const int jMin,
+	const int jMax,
 	real_t * restrict f,
 	const real_t * restrict fScratch,
 	const int * restrict walls);
+#endif
 
 real_t ComputeReynolds(
 	const real_t * restrict f,
@@ -128,38 +134,45 @@ int main(void)
 	real_t * fScratch;
 	int * walls;
 
-	int allocSize = NX * NY * NSPEEDS;
+	int allocSize = NX * NYPADDED * NSPEEDS;
 
 	f = _mm_malloc(allocSize * sizeof *f, 32);
 	fScratch = _mm_malloc(allocSize * sizeof *f, 32);
-	walls = _mm_malloc(NX * NY * sizeof *walls, 32);
+	walls = _mm_malloc(NX * NYPADDED * sizeof *walls, 32);
 
 	InitializeArrays(f, fScratch, walls);
 
+	printf("Lattice Size: %dx%d (rows padded to %d, vectorized loop running to %d)\n", NX,NY, NYPADDED, NYVECMAX);
 
 	// Begin iterations
 	double timeElapsed = GetWallTime();
 
 	for (int n = 0; n < NTIMESTEPS; n++) {
-		if (n % PRINTEVERY == 0) {
-			PrintLattice(n, f);
+
+		if (n % PRINTSTATSEVERY == 0) {
 			if (n != 0) {
 				double complete = (double)n/(double)NTIMESTEPS;
 				int secElap = (int)(GetWallTime()-timeElapsed);
 				int secRem = (int)(secElap/complete*(1.0-complete));
 				double avgbw = n*4*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
-				printf("%6.3lf%% -- Elapsed: %dm%ds, Remaining: %dm%ds.  (Update Bandwidth: ~%.2lf GB/s)\n",
-				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, avgbw);
+				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.2le, Update BW: ~%.2lf GB/s, GFLOPs: ~%.2lf]\n",
+				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, n/(double)secElap,
+				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
 			}
 		}
+		if (n % SAVELATTICEEVERY == 0) {
+			PrintLattice(n, f);
+		}
+
+		// Do a timestep
 		DoTimeStep(f, fScratch, walls);
+
 	}
 
 	timeElapsed = GetWallTime() - timeElapsed;
 	// End iterations
 
 	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(f, walls));
-
 
 
 	// Free dynamically allocated memory
@@ -182,10 +195,11 @@ void DoTimeStep(
 
 	Stream(f, fScratch, walls);
 
-#ifdef AVX
-	CollideAVX(f, fScratch, walls);
+#if defined(AVX) || defined(SSE)
+	CollideVec(0, NYVECMAX, f, fScratch, walls);
+	Collide(NYVECMAX, NY, f, fScratch, walls);
 #else
-	Collide(f, fScratch, walls);
+	Collide(0, NY, f, fScratch, walls);
 #endif
 
 }
@@ -285,37 +299,13 @@ void Stream(
 #pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
 	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i,1,0)], &f[I(i,1,0)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i,2,1)], &f[I(i,1,1)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i+1,1,2)], &f[I(i,1,2)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i,0,3)], &f[I(i,1,3)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i-1,1,4)], &f[I(i,1,4)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i+1,2,5)], &f[I(i,1,5)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i+1,0,6)], &f[I(i,1,6)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i-1,0,7)], &f[I(i,1,7)], (NY-2)* sizeof *f);
-	}
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
 		memcpy(&fScratch[I(i-1,2,8)], &f[I(i,1,8)], (NY-2)* sizeof *f);
 	}
 
@@ -324,6 +314,8 @@ void Stream(
 
 
 void Collide(
+	const int jMin,
+	const int jMax,
 	real_t * restrict f,
 	const real_t * restrict fScratch,
 	const int * restrict walls)
@@ -331,7 +323,7 @@ void Collide(
 
 #pragma omp parallel for default(none) shared(f,fScratch,walls) schedule(static)
 	for (int i = 0; i < NX; i++) {
-		for (int j = 0; j < NY; j++) {
+		for (int j = jMin; j < jMax; j++) {
 
 			// bounce-back from wall
 			if (walls[I(i,j, 0)] == 1) {
@@ -397,110 +389,103 @@ void Collide(
 
 // Vectorized version. Only faster is most of the domain is NOT a wall! We compute the relaxation step for every
 // lattice point, and then update f depending on whether the points are walls or not.
-void CollideAVX(
+#if defined(AVX) || defined(SSE)
+void CollideVec(
+	const int jMin,
+	const int jMax,
 	real_t * restrict f,
 	const real_t * restrict fScratch,
 	const int * restrict walls)
 {
-	const __m256d _one = _mm256_set1_pd(1.0);
-	const __m256d _three = _mm256_set1_pd(3.0);
-	const __m256d _threeOtwo = _mm256_set1_pd(3.0/2.0);
-	const __m256d _nineOtwo = _mm256_set1_pd(9.0/2.0);
-	const __m256d _ICSQ = _mm256_set1_pd(1.0/CSQ);
-	const __m256d _OMEGA0 = _mm256_set1_pd(OMEGA0);
-	const __m256d _OMEGA14 = _mm256_set1_pd(OMEGA14);
-	const __m256d _OMEGA58 = _mm256_set1_pd(OMEGA58);
+	const vector_t _one = VECTOR_SET1(1.0);
+	const vector_t _three = VECTOR_SET1(3.0);
+	const vector_t _half = VECTOR_SET1(0.5);
+	const vector_t _threeOtwo = VECTOR_SET1(1.5);
+
+	const vector_t _ICSQ = VECTOR_SET1(1.0/CSQ);
+	const vector_t _OMEGA0 = VECTOR_SET1(OMEGA0);
+	const vector_t _OMEGA14 = VECTOR_SET1(OMEGA14);
+	const vector_t _OMEGA58 = VECTOR_SET1(OMEGA58);
 
 #pragma omp parallel for default(none) shared(f,fScratch,walls) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		// compute VECWIDTH lattice points at once
-		for (int j = 0; j < NY; j+=VECWIDTH) {
+		for (int j = jMin; j < jMax; j+=VECWIDTH) {
 
-			__m256d _density = _mm256_set1_pd(0.0);
+			vector_t _density = VECTOR_SET1(0.0);
 
-			__m256d _f0 = _mm256_load_pd(&fScratch[I(i,j, 0)]);
-			__m256d _f1 = _mm256_load_pd(&fScratch[I(i,j, 1)]);
-			__m256d _f2 = _mm256_load_pd(&fScratch[I(i,j, 2)]);
-			__m256d _f3 = _mm256_load_pd(&fScratch[I(i,j, 3)]);
-			__m256d _f4 = _mm256_load_pd(&fScratch[I(i,j, 4)]);
-			__m256d _f5 = _mm256_load_pd(&fScratch[I(i,j, 5)]);
-			__m256d _f6 = _mm256_load_pd(&fScratch[I(i,j, 6)]);
-			__m256d _f7 = _mm256_load_pd(&fScratch[I(i,j, 7)]);
-			__m256d _f8 = _mm256_load_pd(&fScratch[I(i,j, 8)]);
+			vector_t _f0 = VECTOR_LOAD(&fScratch[I(i,j, 0)]);
+			vector_t _f1 = VECTOR_LOAD(&fScratch[I(i,j, 1)]);
+			vector_t _f2 = VECTOR_LOAD(&fScratch[I(i,j, 2)]);
+			vector_t _f3 = VECTOR_LOAD(&fScratch[I(i,j, 3)]);
+			vector_t _f4 = VECTOR_LOAD(&fScratch[I(i,j, 4)]);
+			vector_t _f5 = VECTOR_LOAD(&fScratch[I(i,j, 5)]);
+			vector_t _f6 = VECTOR_LOAD(&fScratch[I(i,j, 6)]);
+			vector_t _f7 = VECTOR_LOAD(&fScratch[I(i,j, 7)]);
+			vector_t _f8 = VECTOR_LOAD(&fScratch[I(i,j, 8)]);
 
-			_density = _mm256_add_pd(_density, _f0);
-			_density = _mm256_add_pd(_density, _f1);
-			_density = _mm256_add_pd(_density, _f2);
-			_density = _mm256_add_pd(_density, _f3);
-			_density = _mm256_add_pd(_density, _f4);
-			_density = _mm256_add_pd(_density, _f5);
-			_density = _mm256_add_pd(_density, _f6);
-			_density = _mm256_add_pd(_density, _f7);
-			_density = _mm256_add_pd(_density, _f8);
+			_density = VECTOR_ADD(_density, _f0);
+			_density = VECTOR_ADD(_density, _f1);
+			_density = VECTOR_ADD(_density, _f2);
+			_density = VECTOR_ADD(_density, _f3);
+			_density = VECTOR_ADD(_density, _f4);
+			_density = VECTOR_ADD(_density, _f5);
+			_density = VECTOR_ADD(_density, _f6);
+			_density = VECTOR_ADD(_density, _f7);
+			_density = VECTOR_ADD(_density, _f8);
 
-			__m256d _u_x = _mm256_add_pd(_f6, _f2);
-			_u_x = _mm256_add_pd(_u_x, _f5);
-			_u_x = _mm256_sub_pd(_u_x, _f7);
-			_u_x = _mm256_sub_pd(_u_x, _f4);
-			_u_x = _mm256_sub_pd(_u_x, _f8);
-			_u_x = _mm256_div_pd(_u_x, _density);
+			vector_t _u_x = VECTOR_ADD(_f6, _f2);
+			_u_x = VECTOR_ADD(_u_x, _f5);
+			_u_x = VECTOR_SUB(_u_x, _f7);
+			_u_x = VECTOR_SUB(_u_x, _f4);
+			_u_x = VECTOR_SUB(_u_x, _f8);
+			_u_x = VECTOR_DIV(_u_x, _density);
 
-			__m256d _u_y = _mm256_add_pd(_f5, _f1);
-			_u_y = _mm256_add_pd(_u_y, _f8);
-			_u_y = _mm256_sub_pd(_u_y, _f6);
-			_u_y = _mm256_sub_pd(_u_y, _f3);
-			_u_y = _mm256_sub_pd(_u_y, _f7);
-			_u_y = _mm256_div_pd(_u_y, _density);
+			vector_t _u_y = VECTOR_ADD(_f5, _f1);
+			_u_y = VECTOR_ADD(_u_y, _f8);
+			_u_y = VECTOR_SUB(_u_y, _f6);
+			_u_y = VECTOR_SUB(_u_y, _f3);
+			_u_y = VECTOR_SUB(_u_y, _f7);
+			_u_y = VECTOR_DIV(_u_y, _density);
 
-			__m256d _uDotu = _mm256_add_pd(_mm256_mul_pd(_u_x,_u_x),_mm256_mul_pd(_u_y,_u_y));
 
-			// Directional velocity components e_i dot u
-			__m256d _u1 = _u_y;
-			__m256d _u2 = _u_x;
-			__m256d _u3 = _mm256_mul_pd(_mm256_set1_pd(-1.0),_u_y);
-			__m256d _u4 = _mm256_mul_pd(_mm256_set1_pd(-1.0),_u_x);
-			__m256d _u5 = _mm256_add_pd(_u_x,_u_y);
-			__m256d _u6 = _mm256_sub_pd(_u_x,_u_y);
-			__m256d _u7 = _mm256_mul_pd(_mm256_set1_pd(-1.0),_mm256_add_pd(_u_x,_u_y));
-			__m256d _u8 = _mm256_mul_pd(_mm256_set1_pd(-1.0),_mm256_sub_pd(_u_x,_u_y));
+			vector_t _uDotuTerm = VECTOR_MUL(_threeOtwo,VECTOR_MUL(_ICSQ,VECTOR_ADD(VECTOR_MUL(_u_x,_u_x),VECTOR_MUL(_u_y,_u_y))));
+
+			// Directional velocity components e_i dot u, multiplied by 3/c^2
+			_u_x = VECTOR_MUL(_u_x, VECTOR_MUL(_three, _ICSQ));
+			_u_y = VECTOR_MUL(_u_y, VECTOR_MUL(_three, _ICSQ));
+			vector_t _u1 = _u_y;
+			vector_t _u2 = _u_x;
+			vector_t _u3 = VECTOR_MUL(VECTOR_SET1(-1.0),_u_y);
+			vector_t _u4 = VECTOR_MUL(VECTOR_SET1(-1.0),_u_x);
+			vector_t _u5 = VECTOR_ADD(_u_x,_u_y);
+			vector_t _u6 = VECTOR_SUB(_u_x,_u_y);
+			vector_t _u7 = VECTOR_MUL(VECTOR_SET1(-1.0),VECTOR_ADD(_u_x,_u_y));
+			vector_t _u8 = VECTOR_MUL(VECTOR_SET1(-1.0),VECTOR_SUB(_u_x,_u_y));
 
 
 			// equilibrium density
-			__m256d _fequ0 = _mm256_sub_pd(_one, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ1 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u1,_ICSQ)));
-			        _fequ1 = _mm256_add_pd(_fequ1, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u1,_mm256_mul_pd(_u1,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ1 = _mm256_sub_pd(_fequ1, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ2 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u2,_ICSQ)));
-			        _fequ2 = _mm256_add_pd(_fequ2, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u2,_mm256_mul_pd(_u2,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ2 = _mm256_sub_pd(_fequ2, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ3 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u3,_ICSQ)));
-			        _fequ3 = _mm256_add_pd(_fequ3, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u3,_mm256_mul_pd(_u3,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ3 = _mm256_sub_pd(_fequ3, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ4 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u4,_ICSQ)));
-			        _fequ4 = _mm256_add_pd(_fequ4, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u4,_mm256_mul_pd(_u4,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ4 = _mm256_sub_pd(_fequ4, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ5 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u5,_ICSQ)));
-			        _fequ5 = _mm256_add_pd(_fequ5, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u5,_mm256_mul_pd(_u5,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ5 = _mm256_sub_pd(_fequ5, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ6 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u6,_ICSQ)));
-			        _fequ6 = _mm256_add_pd(_fequ6, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u6,_mm256_mul_pd(_u6,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ6 = _mm256_sub_pd(_fequ6, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ7 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u7,_ICSQ)));
-			        _fequ7 = _mm256_add_pd(_fequ7, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u7,_mm256_mul_pd(_u7,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ7 = _mm256_sub_pd(_fequ7, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
-			__m256d _fequ8 = _mm256_add_pd(_one, _mm256_mul_pd(_three,_mm256_mul_pd(_u8,_ICSQ)));
-			        _fequ8 = _mm256_add_pd(_fequ8, _mm256_mul_pd(_nineOtwo,_mm256_mul_pd(_u8,_mm256_mul_pd(_u8,_mm256_mul_pd(_ICSQ,_ICSQ)))));
-			        _fequ8 = _mm256_sub_pd(_fequ8, _mm256_mul_pd(_threeOtwo,_mm256_mul_pd(_uDotu,_ICSQ)));
+			vector_t _fequ0 = VECTOR_SUB(_one, _uDotuTerm);
+			vector_t _fequ1 = VECTOR_ADD(_one, VECTOR_ADD(_u1, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u1,_u1)), _uDotuTerm)));
+			vector_t _fequ2 = VECTOR_ADD(_one, VECTOR_ADD(_u2, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u2,_u2)), _uDotuTerm)));
+			vector_t _fequ3 = VECTOR_ADD(_one, VECTOR_ADD(_u3, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u3,_u3)), _uDotuTerm)));
+			vector_t _fequ4 = VECTOR_ADD(_one, VECTOR_ADD(_u4, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u4,_u4)), _uDotuTerm)));
+			vector_t _fequ5 = VECTOR_ADD(_one, VECTOR_ADD(_u5, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u5,_u5)), _uDotuTerm)));
+			vector_t _fequ6 = VECTOR_ADD(_one, VECTOR_ADD(_u6, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u6,_u6)), _uDotuTerm)));
+			vector_t _fequ7 = VECTOR_ADD(_one, VECTOR_ADD(_u7, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u7,_u7)), _uDotuTerm)));
+			vector_t _fequ8 = VECTOR_ADD(_one, VECTOR_ADD(_u8, VECTOR_SUB(VECTOR_MUL(_half, VECTOR_MUL(_u8,_u8)), _uDotuTerm)));
+
+
 			// now multiply by omega and density
-			_fequ0 = _mm256_mul_pd(_fequ0, _mm256_mul_pd(_OMEGA0, _density));
-			_fequ1 = _mm256_mul_pd(_fequ1, _mm256_mul_pd(_OMEGA14, _density));
-			_fequ2 = _mm256_mul_pd(_fequ2, _mm256_mul_pd(_OMEGA14, _density));
-			_fequ3 = _mm256_mul_pd(_fequ3, _mm256_mul_pd(_OMEGA14, _density));
-			_fequ4 = _mm256_mul_pd(_fequ4, _mm256_mul_pd(_OMEGA14, _density));
-			_fequ5 = _mm256_mul_pd(_fequ5, _mm256_mul_pd(_OMEGA58, _density));
-			_fequ6 = _mm256_mul_pd(_fequ6, _mm256_mul_pd(_OMEGA58, _density));
-			_fequ7 = _mm256_mul_pd(_fequ7, _mm256_mul_pd(_OMEGA58, _density));
-			_fequ8 = _mm256_mul_pd(_fequ8, _mm256_mul_pd(_OMEGA58, _density));
+			_fequ0 = VECTOR_MUL(_fequ0, VECTOR_MUL(_OMEGA0, _density));
+			_fequ1 = VECTOR_MUL(_fequ1, VECTOR_MUL(_OMEGA14, _density));
+			_fequ2 = VECTOR_MUL(_fequ2, VECTOR_MUL(_OMEGA14, _density));
+			_fequ3 = VECTOR_MUL(_fequ3, VECTOR_MUL(_OMEGA14, _density));
+			_fequ4 = VECTOR_MUL(_fequ4, VECTOR_MUL(_OMEGA14, _density));
+			_fequ5 = VECTOR_MUL(_fequ5, VECTOR_MUL(_OMEGA58, _density));
+			_fequ6 = VECTOR_MUL(_fequ6, VECTOR_MUL(_OMEGA58, _density));
+			_fequ7 = VECTOR_MUL(_fequ7, VECTOR_MUL(_OMEGA58, _density));
+			_fequ8 = VECTOR_MUL(_fequ8, VECTOR_MUL(_OMEGA58, _density));
 
 
 			// relaxation: check if cell is blocked!
@@ -509,15 +494,15 @@ void CollideAVX(
 				wallsSum += walls[I(i,j+k, 0)];
 			}
 			if (wallsSum == 0) {
-				_mm256_store_pd(&f[I(i,j, 0)], _mm256_add_pd(_f0, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ0,_f0))));
-				_mm256_store_pd(&f[I(i,j, 1)], _mm256_add_pd(_f1, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ1,_f1))));
-				_mm256_store_pd(&f[I(i,j, 2)], _mm256_add_pd(_f2, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ2,_f2))));
-				_mm256_store_pd(&f[I(i,j, 3)], _mm256_add_pd(_f3, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ3,_f3))));
-				_mm256_store_pd(&f[I(i,j, 4)], _mm256_add_pd(_f4, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ4,_f4))));
-				_mm256_store_pd(&f[I(i,j, 5)], _mm256_add_pd(_f5, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ5,_f5))));
-				_mm256_store_pd(&f[I(i,j, 6)], _mm256_add_pd(_f6, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ6,_f6))));
-				_mm256_store_pd(&f[I(i,j, 7)], _mm256_add_pd(_f7, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ7,_f7))));
-				_mm256_store_pd(&f[I(i,j, 8)], _mm256_add_pd(_f8, _mm256_mul_pd(_mm256_set1_pd(1.0/TAU),_mm256_sub_pd(_fequ8,_f8))));
+				VECTOR_STORE(&f[I(i,j, 0)], VECTOR_ADD(_f0, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ0,_f0))));
+				VECTOR_STORE(&f[I(i,j, 1)], VECTOR_ADD(_f1, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ1,_f1))));
+				VECTOR_STORE(&f[I(i,j, 2)], VECTOR_ADD(_f2, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ2,_f2))));
+				VECTOR_STORE(&f[I(i,j, 3)], VECTOR_ADD(_f3, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ3,_f3))));
+				VECTOR_STORE(&f[I(i,j, 4)], VECTOR_ADD(_f4, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ4,_f4))));
+				VECTOR_STORE(&f[I(i,j, 5)], VECTOR_ADD(_f5, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ5,_f5))));
+				VECTOR_STORE(&f[I(i,j, 6)], VECTOR_ADD(_f6, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ6,_f6))));
+				VECTOR_STORE(&f[I(i,j, 7)], VECTOR_ADD(_f7, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ7,_f7))));
+				VECTOR_STORE(&f[I(i,j, 8)], VECTOR_ADD(_f8, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ8,_f8))));
 			}
 			else {
 
@@ -551,8 +536,8 @@ void CollideAVX(
 		}
 	}
 
-
 }
+#endif
 
 
 
@@ -625,6 +610,10 @@ void InitializeArrays(
 {
 	const real_t initialf = INITIALDENSITY;
 
+	// It is important that we initialize the arrays in parallel, with the same scheduling as the computation loops.
+	// This allows memory to be allocated correctly for NUMA systems, with a "first touch" policy.
+
+#pragma omp parallel for default(none) shared(walls) schedule(static)
 	// Add walls
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
@@ -645,6 +634,7 @@ void InitializeArrays(
 		walls[I(NX-1,j, 0)] = 1;
 	}
 
+#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
 			f[I(i,j, 0)] = initialf * OMEGA0;
