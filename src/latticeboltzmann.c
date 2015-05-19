@@ -72,10 +72,11 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 // Also store the multiple of VECWIDTH below NY, since the vectorized functions need to terminate here,
 // possibly with a scalar function cleaning up the "extra".
-#define NYVECMAX (4*(NY/4))
+#define NYVECMAX (VECWIDTH*(NY/VECWIDTH))
 
-// For approximate GFLOPs report: we do ~168 FLOP per lattice point
-#define FLOPPERLATTICEPOINT (168.0)
+// For approximate GFLOPs report: we do ~124 FLOP per lattice point, obtained simply by counting ADD,SUB,MUL,DIV
+// intructions in CollideVec.
+#define FLOPPERLATTICEPOINT (124.0)
 
 
 
@@ -154,7 +155,8 @@ int main(void)
 				double complete = (double)n/(double)NTIMESTEPS;
 				int secElap = (int)(GetWallTime()-timeElapsed);
 				int secRem = (int)(secElap/complete*(1.0-complete));
-				double avgbw = n*4*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
+				// each timestep requires two reads and two writes of the f and fScratch arrays:
+				double avgbw = 4.0*n*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
 				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.2le, Update BW: ~%.2lf GB/s, GFLOPs: ~%.2lf]\n",
 				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, n/(double)secElap,
 				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
