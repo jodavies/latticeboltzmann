@@ -44,22 +44,22 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 // variable parameters
 #define NX 400
-#define NY 2001
-#define TAU 0.8
+#define NY 2000
+#define TAU 0.7
 #define CSQ (1.0)
 
-#define NTIMESTEPS 20000
+#define NTIMESTEPS 10000
 #define PRINTSTATSEVERY 1000
-#define SAVELATTICEEVERY 100
+#define SAVELATTICEEVERY 1000
 #define ACCEL 0.005
 #define INITIALDENSITY 0.1
 
 
 // Choose precision and vectorization
-//#include "prec_double_avx.h"
+#include "prec_double_avx.h"
 //#include "prec_double_sse.h"
 //#include "prec_double_serial.h"
-#include "prec_float_avx.h"
+//#include "prec_float_avx.h"
 //#include "prec_float_sse.h"
 //#include "prec_float_serial.h"
 
@@ -82,43 +82,38 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 // Function prototypes
 void DoTimeStep(
-	real_t * restrict f,
-	real_t * restrict fScratch,
-	const int * restrict walls);
+	real_t * restrict fA,
+	real_t * restrict fB,
+	const char * restrict walls);
 
 void ApplySource(
 	real_t * restrict f,
-	const int * restrict walls);
+	const char * restrict walls);
 
-void Stream(
-	const real_t * restrict f,
-	real_t * restrict fScratch,
-	const int * restrict walls);
-
-void Collide(
+void StreamCollide(
 	const int jMin,
 	const int jMax,
-	real_t * restrict f,
-	const real_t * restrict fScratch,
-	const int * restrict walls);
+	const real_t * restrict fSrc,
+	real_t * restrict fDst,
+	const char * restrict walls);
 
 #if defined(AVX) || defined(SSE)
-void CollideVec(
+void StreamCollideVec(
 	const int jMin,
 	const int jMax,
-	real_t * restrict f,
-	const real_t * restrict fScratch,
-	const int * restrict walls);
+	const real_t * restrict fSrc,
+	real_t * restrict fDst,
+	const char * restrict walls);
 #endif
 
 real_t ComputeReynolds(
 	const real_t * restrict f,
-	const int * restrict walls);
+	const char * restrict walls);
 
 void InitializeArrays(
-	real_t * restrict f,
-	real_t * restrict fScratch,
-	int * restrict walls);
+	real_t * restrict fA,
+	real_t * restrict fB,
+	char * restrict walls);
 
 void PrintLattice(int timeStep, const real_t * restrict f);
 
@@ -131,55 +126,63 @@ int main(void)
 	feenableexcept(FE_ALL_EXCEPT & ~FE_INEXACT);
 
 	// Allocate memory. Use _mm_malloc() for alignment. Want 32byte alignment for vector instructions.
-	real_t * f;
-	real_t * fScratch;
-	int * walls;
+	real_t * fA;
+	real_t * fB;
+	char * walls;
 
 	int allocSize = NX * NYPADDED * NSPEEDS;
 
-	f = _mm_malloc(allocSize * sizeof *f, 32);
-	fScratch = _mm_malloc(allocSize * sizeof *f, 32);
+	fA = _mm_malloc(allocSize * sizeof *fA, 32);
+	fB = _mm_malloc(allocSize * sizeof *fB, 32);
 	walls = _mm_malloc(NX * NYPADDED * sizeof *walls, 32);
 
-	InitializeArrays(f, fScratch, walls);
+	InitializeArrays(fA, fB, walls);
 
-	printf("Lattice Size: %dx%d (rows padded to %d, vectorized loop running to %d)\n", NX,NY, NYPADDED, NYVECMAX);
+//	printf("Lattice Size: %dx%d (rows padded to %d, vectorized loop running to %d)\n", NX,NY, NYPADDED, NYVECMAX);
+//	printf("Allocated %.2lf MB lattices, %.2lf MB walls.\n", (2*sizeof *f *allocSize)/1024.0/1024.0, (NX*NYPADDED*sizeof *walls)/1024.0/1024.0);
 
 	// Begin iterations
 	double timeElapsed = GetWallTime();
 
-	for (int n = 0; n < NTIMESTEPS; n++) {
+	for (int n = 0; n < NTIMESTEPS; n+=2) {
 
 		if (n % PRINTSTATSEVERY == 0) {
 			if (n != 0) {
 				double complete = (double)n/(double)NTIMESTEPS;
 				int secElap = (int)(GetWallTime()-timeElapsed);
 				int secRem = (int)(secElap/complete*(1.0-complete));
-				// each timestep requires two reads and two writes of the f and fScratch arrays:
 				double avgbw = 4.0*n*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
-				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.2le, Update BW: ~%.2lf GB/s, GFLOPs: ~%.2lf]\n",
+				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
 				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, n/(double)secElap,
 				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
 			}
 		}
 		if (n % SAVELATTICEEVERY == 0) {
-			PrintLattice(n, f);
+			//PrintLattice(n, f);
 		}
 
 		// Do a timestep
-		DoTimeStep(f, fScratch, walls);
+		DoTimeStep(fA, fB, walls);
 
 	}
 
 	timeElapsed = GetWallTime() - timeElapsed;
+
 	// End iterations
 
-	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(f, walls));
+
+	// print final run stats
+	int secElap = (int)(timeElapsed);
+	double avgbw = 4.0*NTIMESTEPS*sizeof(real_t)*NX*NY*NSPEEDS/(timeElapsed)/1024/1024/1024;
+	printf("100.0%%--Elapsed: %3dm%02ds,                     [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
+	       secElap/60, secElap%60, NTIMESTEPS/(double)secElap, avgbw,
+	       FLOPPERLATTICEPOINT*NX*NY*NTIMESTEPS/(double)secElap/1000.0/1000.0/1000.0);
+	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(fA, walls));
 
 
 	// Free dynamically allocated memory
-	_mm_free(f);
-	_mm_free(fScratch);
+	_mm_free(fA);
+	_mm_free(fB);
 	_mm_free(walls);
 
 	return EXIT_SUCCESS;
@@ -188,167 +191,86 @@ int main(void)
 
 
 void DoTimeStep(
-	real_t * restrict f,
-	real_t * restrict fScratch,
-	const int * restrict walls)
+	real_t * restrict fA,
+	real_t * restrict fB,
+	const char * restrict walls)
 {
 
-	ApplySource(f, walls);
-
-	Stream(f, fScratch, walls);
+	ApplySource(fA, walls);
 
 #if defined(AVX) || defined(SSE)
-	CollideVec(0, NYVECMAX, f, fScratch, walls);
-	Collide(NYVECMAX, NY, f, fScratch, walls);
+	StreamCollideVec(0,NYVECMAX,fA, fB, walls);
+	StreamCollide(NYVECMAX, NY, fA, fB, walls);
 #else
-	Collide(0, NY, f, fScratch, walls);
+	StreamCollide(0, NY, fA, fB, walls);
+#endif
+
+	ApplySource(fB, walls);
+
+#if defined(AVX) || defined(SSE)
+	StreamCollideVec(0,NYVECMAX,fB, fA, walls);
+	StreamCollide(NYVECMAX, NY, fB, fA, walls);
+#else
+	StreamCollide(0, NY, fB, fA, walls);
 #endif
 
 }
 
 
 
-void Stream(
-	const real_t * restrict f,
-	real_t * restrict fScratch,
-	const int * restrict walls)
-{
-
-
-#ifdef WRAPAROUND
-	// Wrap around boundary condition
-	// Bottom row
-	int i = 0;
-	for (int j = 0; j < NY; j++) {
-
-		int x_u = (i + 1) % NX;
-		int x_d = (i == 0) ? (NX - 1) : (i - 1);
-		int y_r = (j + 1) % NY;
-		int y_l = (j == 0) ? (NY - 1) : (j - 1);
-
-		fScratch[I(i  , j  , 0)] = f[I(i,j, 0)];
-		fScratch[I(i  , y_r, 1)] = f[I(i,j, 1)];
-		fScratch[I(x_u, j  , 2)] = f[I(i,j, 2)];
-		fScratch[I(i  , y_l, 3)] = f[I(i,j, 3)];
-		fScratch[I(x_d, j  , 4)] = f[I(i,j, 4)];
-		fScratch[I(x_u, y_r, 5)] = f[I(i,j, 5)];
-		fScratch[I(x_u, y_l, 6)] = f[I(i,j, 6)];
-		fScratch[I(x_d, y_l, 7)] = f[I(i,j, 7)];
-		fScratch[I(x_d, y_r, 8)] = f[I(i,j, 8)];
-	}
-	// Top row
-	i = NX-1;
-	for (int j = 0; j < NY; j++) {
-
-		int x_u = (i + 1) % NX;
-		int x_d = (i == 0) ? (NX - 1) : (i - 1);
-		int y_r = (j + 1) % NY;
-		int y_l = (j == 0) ? (NY - 1) : (j - 1);
-
-		fScratch[I(i  , j  , 0)] = f[I(i,j, 0)];
-		fScratch[I(i  , y_r, 1)] = f[I(i,j, 1)];
-		fScratch[I(x_u, j  , 2)] = f[I(i,j, 2)];
-		fScratch[I(i  , y_l, 3)] = f[I(i,j, 3)];
-		fScratch[I(x_d, j  , 4)] = f[I(i,j, 4)];
-		fScratch[I(x_u, y_r, 5)] = f[I(i,j, 5)];
-		fScratch[I(x_u, y_l, 6)] = f[I(i,j, 6)];
-		fScratch[I(x_d, y_l, 7)] = f[I(i,j, 7)];
-		fScratch[I(x_d, y_r, 8)] = f[I(i,j, 8)];
-	}
-	// Left, right columns (excluding top and bottom rows! already done)
-	int j = 0;
-	for (int i = 1; i < NX-1; i++) {
-
-		int x_u = (i + 1) % NX;
-		int x_d = (i == 0) ? (NX - 1) : (i - 1);
-		int y_r = (j + 1) % NY;
-		int y_l = (j == 0) ? (NY - 1) : (j - 1);
-
-		fScratch[I(i  , j  , 0)] = f[I(i,j, 0)];
-		fScratch[I(i  , y_r, 1)] = f[I(i,j, 1)];
-		fScratch[I(x_u, j  , 2)] = f[I(i,j, 2)];
-		fScratch[I(i  , y_l, 3)] = f[I(i,j, 3)];
-		fScratch[I(x_d, j  , 4)] = f[I(i,j, 4)];
-		fScratch[I(x_u, y_r, 5)] = f[I(i,j, 5)];
-		fScratch[I(x_u, y_l, 6)] = f[I(i,j, 6)];
-		fScratch[I(x_d, y_l, 7)] = f[I(i,j, 7)];
-		fScratch[I(x_d, y_r, 8)] = f[I(i,j, 8)];
-	}
-	j = NY-1;
-	for (int i = 1; i < NX-1; i++) {
-
-		int x_u = (i + 1) % NX;
-		int x_d = (i == 0) ? (NX - 1) : (i - 1);
-		int y_r = (j + 1) % NY;
-		int y_l = (j == 0) ? (NY - 1) : (j - 1);
-
-		fScratch[I(i  , j  , 0)] = f[I(i,j, 0)];
-		fScratch[I(i  , y_r, 1)] = f[I(i,j, 1)];
-		fScratch[I(x_u, j  , 2)] = f[I(i,j, 2)];
-		fScratch[I(i  , y_l, 3)] = f[I(i,j, 3)];
-		fScratch[I(x_d, j  , 4)] = f[I(i,j, 4)];
-		fScratch[I(x_u, y_r, 5)] = f[I(i,j, 5)];
-		fScratch[I(x_u, y_l, 6)] = f[I(i,j, 6)];
-		fScratch[I(x_d, y_l, 7)] = f[I(i,j, 7)];
-		fScratch[I(x_d, y_r, 8)] = f[I(i,j, 8)];
-	}
-#else
-	// Non-wraparound BCs
-#endif
-
-
-	// Central region: no BC dependence
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
-	for (int i = 1; i < NX-1; i++) {
-		memcpy(&fScratch[I(i,1,0)], &f[I(i,1,0)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i,2,1)], &f[I(i,1,1)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i+1,1,2)], &f[I(i,1,2)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i,0,3)], &f[I(i,1,3)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i-1,1,4)], &f[I(i,1,4)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i+1,2,5)], &f[I(i,1,5)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i+1,0,6)], &f[I(i,1,6)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i-1,0,7)], &f[I(i,1,7)], (NY-2)* sizeof *f);
-		memcpy(&fScratch[I(i-1,2,8)], &f[I(i,1,8)], (NY-2)* sizeof *f);
-	}
-
-}
-
-
-
-void Collide(
+// Combined stream and collide function, to improve caching. We read from fSrc and write updated values to fDst. This
+// function is to be called with the role of fSrc and fDst switched each timestep.
+void StreamCollide(
 	const int jMin,
 	const int jMax,
-	real_t * restrict f,
-	const real_t * restrict fScratch,
-	const int * restrict walls)
+	const real_t * restrict fSrc,
+	real_t * restrict fDst,
+	const char * restrict walls)
 {
+	// Copy to temporary array
+	real_t fTmp[NSPEEDS];
 
-#pragma omp parallel for default(none) shared(f,fScratch,walls) schedule(static)
+#pragma omp parallel for default(none) shared(fSrc,fDst,walls) private(fTmp) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		for (int j = jMin; j < jMax; j++) {
 
+			// pull values from neighbouring lattice points to fTmp
+			int x_u = (i + 1) % NX;
+			int x_d = (i == 0) ? (NX - 1) : (i - 1);
+			int y_r = (j + 1) % NY;
+			int y_l = (j == 0) ? (NY - 1) : (j - 1);
+			fTmp[0] = fSrc[I(i  ,j  , 0)];
+			fTmp[1] = fSrc[I(i  ,y_l, 1)];
+			fTmp[2] = fSrc[I(x_d,j  , 2)];
+			fTmp[3] = fSrc[I(i  ,y_r, 3)];
+			fTmp[4] = fSrc[I(x_u,j  , 4)];
+			fTmp[5] = fSrc[I(x_d,y_l, 5)];
+			fTmp[6] = fSrc[I(x_d,y_r, 6)];
+			fTmp[7] = fSrc[I(x_u,y_r, 7)];
+			fTmp[8] = fSrc[I(x_u,y_l, 8)];
+
 			// bounce-back from wall
 			if (walls[I(i,j, 0)] == 1) {
-				f[I(i,j, 1)] = fScratch[I(i,j, 3)];
-				f[I(i,j, 2)] = fScratch[I(i,j, 4)];
-				f[I(i,j, 3)] = fScratch[I(i,j, 1)];
-				f[I(i,j, 4)] = fScratch[I(i,j, 2)];
-				f[I(i,j, 5)] = fScratch[I(i,j, 7)];
-				f[I(i,j, 6)] = fScratch[I(i,j, 8)];
-				f[I(i,j, 7)] = fScratch[I(i,j, 5)];
-				f[I(i,j, 8)] = fScratch[I(i,j, 6)];
+				fDst[I(i,j, 1)] = fTmp[3];
+				fDst[I(i,j, 2)] = fTmp[4];
+				fDst[I(i,j, 3)] = fTmp[1];
+				fDst[I(i,j, 4)] = fTmp[2];
+				fDst[I(i,j, 5)] = fTmp[7];
+				fDst[I(i,j, 6)] = fTmp[8];
+				fDst[I(i,j, 7)] = fTmp[5];
+				fDst[I(i,j, 8)] = fTmp[6];
 			}
 
 			else {
 				real_t density = 0;
 				for (int s = 0; s < NSPEEDS; s++) {
-					density += fScratch[I(i,j, s)];
+					density += fTmp[s];
 				}
 
-				real_t u_x = (+(fScratch[I(i,j, 6)]+fScratch[I(i,j, 2)]+fScratch[I(i,j, 5)])
-				              -(fScratch[I(i,j, 7)]+fScratch[I(i,j, 4)]+fScratch[I(i,j, 8)]))/density;
-				real_t u_y = (+(fScratch[I(i,j, 5)]+fScratch[I(i,j, 1)]+fScratch[I(i,j, 8)])
-				              -(fScratch[I(i,j, 6)]+fScratch[I(i,j, 3)]+fScratch[I(i,j, 7)]))/density;
+				real_t u_x = (+(fTmp[6]+fTmp[2]+fTmp[5])
+				              -(fTmp[7]+fTmp[4]+fTmp[8]))/density;
+				real_t u_y = (+(fTmp[5]+fTmp[1]+fTmp[8])
+				              -(fTmp[6]+fTmp[3]+fTmp[7]))/density;
 
 				real_t uDotu = u_x * u_x + u_y * u_y;
 
@@ -377,27 +299,24 @@ void Collide(
 
 				// relaxation:
 				for (int s = 0; s < NSPEEDS; s++) {
-					f[I(i,j, s)] = fScratch[I(i,j, s)] + (1.0/TAU)*(fequ[s] - fScratch[I(i,j, s)]);
+					fDst[I(i,j, s)] = fTmp[s] + (1.0/TAU)*(fequ[s] - fTmp[s]);
 				}
 			}
 
 		}
 	}
 
-
 }
 
 
 
-// Vectorized version. Only faster is most of the domain is NOT a wall! We compute the relaxation step for every
-// lattice point, and then update f depending on whether the points are walls or not.
 #if defined(AVX) || defined(SSE)
-void CollideVec(
+void StreamCollideVec(
 	const int jMin,
 	const int jMax,
-	real_t * restrict f,
-	const real_t * restrict fScratch,
-	const int * restrict walls)
+	const real_t * restrict fSrc,
+	real_t * restrict fDst,
+	const char * restrict walls)
 {
 	const vector_t _one = VECTOR_SET1(1.0);
 	const vector_t _three = VECTOR_SET1(3.0);
@@ -408,23 +327,54 @@ void CollideVec(
 	const vector_t _OMEGA0 = VECTOR_SET1(OMEGA0);
 	const vector_t _OMEGA14 = VECTOR_SET1(OMEGA14);
 	const vector_t _OMEGA58 = VECTOR_SET1(OMEGA58);
+	const vector_t _ITAU = VECTOR_SET1(1.0/TAU);
 
-#pragma omp parallel for default(none) shared(f,fScratch,walls) schedule(static)
+	// Copy to temporary array
+	real_t fTmp[NSPEEDS*VECWIDTH];
+
+#pragma omp parallel for default(none) shared(fSrc,fDst,walls) private(fTmp) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		// compute VECWIDTH lattice points at once
 		for (int j = jMin; j < jMax; j+=VECWIDTH) {
 
+			// pull values from neighbouring lattice points to fTmp
+			for (int k = 0; k < VECWIDTH; k++) {
+				int x_u = (i + 1) % NX;
+				int x_d = (i == 0) ? (NX - 1) : (i - 1);
+				int y_r = (j+k + 1) % NY;
+				int y_l = (j+k == 0) ? (NY - 1) : (j+k - 1);
+				fTmp[VECWIDTH*0+k] = fSrc[I(i  ,j+k, 0)];
+				fTmp[VECWIDTH*1+k] = fSrc[I(i  ,y_l, 1)];
+				fTmp[VECWIDTH*2+k] = fSrc[I(x_d,j+k, 2)];
+				fTmp[VECWIDTH*3+k] = fSrc[I(i  ,y_r, 3)];
+				fTmp[VECWIDTH*4+k] = fSrc[I(x_u,j+k, 4)];
+				fTmp[VECWIDTH*5+k] = fSrc[I(x_d,y_l, 5)];
+				fTmp[VECWIDTH*6+k] = fSrc[I(x_d,y_r, 6)];
+				fTmp[VECWIDTH*7+k] = fSrc[I(x_u,y_r, 7)];
+				fTmp[VECWIDTH*8+k] = fSrc[I(x_u,y_l, 8)];
+			}
+
+			_mm_prefetch(&fSrc[I(i  ,j+VECWIDTH, 0)],0);
+			_mm_prefetch(&fSrc[I(i  ,j+VECWIDTH, 1)],0);
+			_mm_prefetch(&fSrc[I(i-1,j+VECWIDTH, 2)],0);
+			_mm_prefetch(&fSrc[I(i  ,j+VECWIDTH, 3)],0);
+			_mm_prefetch(&fSrc[I(i+1,j+VECWIDTH, 4)],0);
+			_mm_prefetch(&fSrc[I(i-1,j+VECWIDTH, 5)],0);
+			_mm_prefetch(&fSrc[I(i-1,j+VECWIDTH, 6)],0);
+			_mm_prefetch(&fSrc[I(i+1,j+VECWIDTH, 7)],0);
+			_mm_prefetch(&fSrc[I(i+1,j+VECWIDTH, 8)],0);
+
 			vector_t _density = VECTOR_SET1(0.0);
 
-			vector_t _f0 = VECTOR_LOAD(&fScratch[I(i,j, 0)]);
-			vector_t _f1 = VECTOR_LOAD(&fScratch[I(i,j, 1)]);
-			vector_t _f2 = VECTOR_LOAD(&fScratch[I(i,j, 2)]);
-			vector_t _f3 = VECTOR_LOAD(&fScratch[I(i,j, 3)]);
-			vector_t _f4 = VECTOR_LOAD(&fScratch[I(i,j, 4)]);
-			vector_t _f5 = VECTOR_LOAD(&fScratch[I(i,j, 5)]);
-			vector_t _f6 = VECTOR_LOAD(&fScratch[I(i,j, 6)]);
-			vector_t _f7 = VECTOR_LOAD(&fScratch[I(i,j, 7)]);
-			vector_t _f8 = VECTOR_LOAD(&fScratch[I(i,j, 8)]);
+			vector_t _f0 = VECTOR_LOAD(&fTmp[VECWIDTH*0]);
+			vector_t _f1 = VECTOR_LOAD(&fTmp[VECWIDTH*1]);
+			vector_t _f2 = VECTOR_LOAD(&fTmp[VECWIDTH*2]);
+			vector_t _f3 = VECTOR_LOAD(&fTmp[VECWIDTH*3]);
+			vector_t _f4 = VECTOR_LOAD(&fTmp[VECWIDTH*4]);
+			vector_t _f5 = VECTOR_LOAD(&fTmp[VECWIDTH*5]);
+			vector_t _f6 = VECTOR_LOAD(&fTmp[VECWIDTH*6]);
+			vector_t _f7 = VECTOR_LOAD(&fTmp[VECWIDTH*7]);
+			vector_t _f8 = VECTOR_LOAD(&fTmp[VECWIDTH*8]);
 
 			_density = VECTOR_ADD(_density, _f0);
 			_density = VECTOR_ADD(_density, _f1);
@@ -496,39 +446,39 @@ void CollideVec(
 				wallsSum += walls[I(i,j+k, 0)];
 			}
 			if (wallsSum == 0) {
-				VECTOR_STORE(&f[I(i,j, 0)], VECTOR_ADD(_f0, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ0,_f0))));
-				VECTOR_STORE(&f[I(i,j, 1)], VECTOR_ADD(_f1, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ1,_f1))));
-				VECTOR_STORE(&f[I(i,j, 2)], VECTOR_ADD(_f2, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ2,_f2))));
-				VECTOR_STORE(&f[I(i,j, 3)], VECTOR_ADD(_f3, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ3,_f3))));
-				VECTOR_STORE(&f[I(i,j, 4)], VECTOR_ADD(_f4, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ4,_f4))));
-				VECTOR_STORE(&f[I(i,j, 5)], VECTOR_ADD(_f5, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ5,_f5))));
-				VECTOR_STORE(&f[I(i,j, 6)], VECTOR_ADD(_f6, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ6,_f6))));
-				VECTOR_STORE(&f[I(i,j, 7)], VECTOR_ADD(_f7, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ7,_f7))));
-				VECTOR_STORE(&f[I(i,j, 8)], VECTOR_ADD(_f8, VECTOR_MUL(VECTOR_SET1(1.0/TAU),VECTOR_SUB(_fequ8,_f8))));
+				VECTOR_STORE(&fDst[I(i,j, 0)], VECTOR_ADD(_f0, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ0,_f0))));
+				VECTOR_STORE(&fDst[I(i,j, 1)], VECTOR_ADD(_f1, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ1,_f1))));
+				VECTOR_STORE(&fDst[I(i,j, 2)], VECTOR_ADD(_f2, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ2,_f2))));
+				VECTOR_STORE(&fDst[I(i,j, 3)], VECTOR_ADD(_f3, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ3,_f3))));
+				VECTOR_STORE(&fDst[I(i,j, 4)], VECTOR_ADD(_f4, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ4,_f4))));
+				VECTOR_STORE(&fDst[I(i,j, 5)], VECTOR_ADD(_f5, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ5,_f5))));
+				VECTOR_STORE(&fDst[I(i,j, 6)], VECTOR_ADD(_f6, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ6,_f6))));
+				VECTOR_STORE(&fDst[I(i,j, 7)], VECTOR_ADD(_f7, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ7,_f7))));
+				VECTOR_STORE(&fDst[I(i,j, 8)], VECTOR_ADD(_f8, VECTOR_MUL(_ITAU,VECTOR_SUB(_fequ8,_f8))));
 			}
 			else {
 
 				for (int k = 0; k < VECWIDTH; k++) {
 					if (walls[I(i,j+k, 0)] == 0) {
-						f[I(i,j+k, 0)] = fScratch[I(i,j+k, 0)] + (1.0/TAU)*( ((real_t*)&_fequ0)[k] - fScratch[I(i,j+k, 0)]);
-						f[I(i,j+k, 1)] = fScratch[I(i,j+k, 1)] + (1.0/TAU)*( ((real_t*)&_fequ1)[k] - fScratch[I(i,j+k, 1)]);
-						f[I(i,j+k, 2)] = fScratch[I(i,j+k, 2)] + (1.0/TAU)*( ((real_t*)&_fequ2)[k] - fScratch[I(i,j+k, 2)]);
-						f[I(i,j+k, 3)] = fScratch[I(i,j+k, 3)] + (1.0/TAU)*( ((real_t*)&_fequ3)[k] - fScratch[I(i,j+k, 3)]);
-						f[I(i,j+k, 4)] = fScratch[I(i,j+k, 4)] + (1.0/TAU)*( ((real_t*)&_fequ4)[k] - fScratch[I(i,j+k, 4)]);
-						f[I(i,j+k, 5)] = fScratch[I(i,j+k, 5)] + (1.0/TAU)*( ((real_t*)&_fequ5)[k] - fScratch[I(i,j+k, 5)]);
-						f[I(i,j+k, 6)] = fScratch[I(i,j+k, 6)] + (1.0/TAU)*( ((real_t*)&_fequ6)[k] - fScratch[I(i,j+k, 6)]);
-						f[I(i,j+k, 7)] = fScratch[I(i,j+k, 7)] + (1.0/TAU)*( ((real_t*)&_fequ7)[k] - fScratch[I(i,j+k, 7)]);
-						f[I(i,j+k, 8)] = fScratch[I(i,j+k, 8)] + (1.0/TAU)*( ((real_t*)&_fequ8)[k] - fScratch[I(i,j+k, 8)]);
+						fDst[I(i,j+k, 0)] = fTmp[VECWIDTH*0+k] + (1.0/TAU)*( ((real_t*)&_fequ0)[k] - fTmp[VECWIDTH*0+k]);
+						fDst[I(i,j+k, 1)] = fTmp[VECWIDTH*1+k] + (1.0/TAU)*( ((real_t*)&_fequ1)[k] - fTmp[VECWIDTH*1+k]);
+						fDst[I(i,j+k, 2)] = fTmp[VECWIDTH*2+k] + (1.0/TAU)*( ((real_t*)&_fequ2)[k] - fTmp[VECWIDTH*2+k]);
+						fDst[I(i,j+k, 3)] = fTmp[VECWIDTH*3+k] + (1.0/TAU)*( ((real_t*)&_fequ3)[k] - fTmp[VECWIDTH*3+k]);
+						fDst[I(i,j+k, 4)] = fTmp[VECWIDTH*4+k] + (1.0/TAU)*( ((real_t*)&_fequ4)[k] - fTmp[VECWIDTH*4+k]);
+						fDst[I(i,j+k, 5)] = fTmp[VECWIDTH*5+k] + (1.0/TAU)*( ((real_t*)&_fequ5)[k] - fTmp[VECWIDTH*5+k]);
+						fDst[I(i,j+k, 6)] = fTmp[VECWIDTH*6+k] + (1.0/TAU)*( ((real_t*)&_fequ6)[k] - fTmp[VECWIDTH*6+k]);
+						fDst[I(i,j+k, 7)] = fTmp[VECWIDTH*7+k] + (1.0/TAU)*( ((real_t*)&_fequ7)[k] - fTmp[VECWIDTH*7+k]);
+						fDst[I(i,j+k, 8)] = fTmp[VECWIDTH*8+k] + (1.0/TAU)*( ((real_t*)&_fequ8)[k] - fTmp[VECWIDTH*8+k]);
 					}
 					else {
-						f[I(i,j+k, 1)] = fScratch[I(i,j+k, 3)];
-						f[I(i,j+k, 2)] = fScratch[I(i,j+k, 4)];
-						f[I(i,j+k, 3)] = fScratch[I(i,j+k, 1)];
-						f[I(i,j+k, 4)] = fScratch[I(i,j+k, 2)];
-						f[I(i,j+k, 5)] = fScratch[I(i,j+k, 7)];
-						f[I(i,j+k, 6)] = fScratch[I(i,j+k, 8)];
-						f[I(i,j+k, 7)] = fScratch[I(i,j+k, 5)];
-						f[I(i,j+k, 8)] = fScratch[I(i,j+k, 6)];
+						fDst[I(i,j+k, 1)] = fTmp[VECWIDTH*3+k];
+						fDst[I(i,j+k, 2)] = fTmp[VECWIDTH*4+k];
+						fDst[I(i,j+k, 3)] = fTmp[VECWIDTH*1+k];
+						fDst[I(i,j+k, 4)] = fTmp[VECWIDTH*2+k];
+						fDst[I(i,j+k, 5)] = fTmp[VECWIDTH*7+k];
+						fDst[I(i,j+k, 6)] = fTmp[VECWIDTH*8+k];
+						fDst[I(i,j+k, 7)] = fTmp[VECWIDTH*5+k];
+						fDst[I(i,j+k, 8)] = fTmp[VECWIDTH*6+k];
 					}
 				}
 
@@ -545,7 +495,7 @@ void CollideVec(
 
 void ApplySource(
 	real_t * restrict f,
-	const int * restrict walls)
+	const char * restrict walls)
 {
 
 	// Accelerate the flow so we have a pipe with fluid flowing along it.
@@ -578,7 +528,7 @@ void ApplySource(
 
 real_t ComputeReynolds(
 	const real_t * restrict f,
-	const int * restrict walls)
+	const char * restrict walls)
 {
 	// Compute reynolds number over central column
 	int j = (int)((real_t)NY / 2.0);
@@ -606,9 +556,9 @@ real_t ComputeReynolds(
 
 
 void InitializeArrays(
-	real_t * restrict f,
-	real_t * restrict fScratch,
-	int * restrict walls)
+	real_t * restrict fA,
+	real_t * restrict fB,
+	char * restrict walls)
 {
 	const real_t initialf = INITIALDENSITY;
 
@@ -636,28 +586,28 @@ void InitializeArrays(
 		walls[I(NX-1,j, 0)] = 1;
 	}
 
-#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
+#pragma omp parallel for default(none) shared(fA,fB) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
-			f[I(i,j, 0)] = initialf * OMEGA0;
-			f[I(i,j, 1)] = initialf * OMEGA14;
-			f[I(i,j, 2)] = initialf * OMEGA14;
-			f[I(i,j, 3)] = initialf * OMEGA14;
-			f[I(i,j, 4)] = initialf * OMEGA14;
-			f[I(i,j, 5)] = initialf * OMEGA58;
-			f[I(i,j, 6)] = initialf * OMEGA58;
-			f[I(i,j, 7)] = initialf * OMEGA58;
-			f[I(i,j, 8)] = initialf * OMEGA58;
+			fA[I(i,j, 0)] = initialf * OMEGA0;
+			fA[I(i,j, 1)] = initialf * OMEGA14;
+			fA[I(i,j, 2)] = initialf * OMEGA14;
+			fA[I(i,j, 3)] = initialf * OMEGA14;
+			fA[I(i,j, 4)] = initialf * OMEGA14;
+			fA[I(i,j, 5)] = initialf * OMEGA58;
+			fA[I(i,j, 6)] = initialf * OMEGA58;
+			fA[I(i,j, 7)] = initialf * OMEGA58;
+			fA[I(i,j, 8)] = initialf * OMEGA58;
 
-			fScratch[I(i,j, 0)] = 0.0;
-			fScratch[I(i,j, 1)] = 0.0;
-			fScratch[I(i,j, 2)] = 0.0;
-			fScratch[I(i,j, 3)] = 0.0;
-			fScratch[I(i,j, 4)] = 0.0;
-			fScratch[I(i,j, 5)] = 0.0;
-			fScratch[I(i,j, 6)] = 0.0;
-			fScratch[I(i,j, 7)] = 0.0;
-			fScratch[I(i,j, 8)] = 0.0;
+			fB[I(i,j, 0)] = 0.0;
+			fB[I(i,j, 1)] = 0.0;
+			fB[I(i,j, 2)] = 0.0;
+			fB[I(i,j, 3)] = 0.0;
+			fB[I(i,j, 4)] = 0.0;
+			fB[I(i,j, 5)] = 0.0;
+			fB[I(i,j, 6)] = 0.0;
+			fB[I(i,j, 7)] = 0.0;
+			fB[I(i,j, 8)] = 0.0;
 		}
 	}
 
@@ -671,6 +621,8 @@ void PrintLattice(int timeStep, const real_t * restrict f)
 	char filename[100];
 	sprintf(filename,"data/%d.csv",timeStep);
 	FILE *fp = fopen(filename,"w");
+
+	if (fp == NULL) printf("Error opening file %s\n", filename);
 
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
