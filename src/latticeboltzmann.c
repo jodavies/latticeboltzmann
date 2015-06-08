@@ -11,7 +11,7 @@ between lattice points, that is, the up/down, left/right and diagonals. We denot
    f7  f4  f8
 
 Define local macroscopic variables: fluid density rho = Sum f_i
-                                    velocity u = 1/rho Sum f_i e_i   (ei are unit vectors along the links)
+                                    velocity u = 1/rho Sum f_i e_i   (ei are vectors along the links)
 
 The particle distribution functions are updated each timestep:
    f_i(x+e_i*dt, t+dt) = f_i(x,t) - 1/tau [f_i(x,t) - feq_i(x,t)]
@@ -131,15 +131,13 @@ int main(void)
 	char * walls;
 
 	int allocSize = NX * NYPADDED * NSPEEDS;
-
+	printf("Lattice Size: %dx%d (%lf.2 MB)\n", NX, NY, (double)(allocSize*sizeof(*fA))/1024.0/1024.0);
 	fA = _mm_malloc(allocSize * sizeof *fA, 32);
 	fB = _mm_malloc(allocSize * sizeof *fB, 32);
 	walls = _mm_malloc(NX * NYPADDED * sizeof *walls, 32);
 
 	InitializeArrays(fA, fB, walls);
 
-//	printf("Lattice Size: %dx%d (rows padded to %d, vectorized loop running to %d)\n", NX,NY, NYPADDED, NYVECMAX);
-//	printf("Allocated %.2lf MB lattices, %.2lf MB walls.\n", (2*sizeof *f *allocSize)/1024.0/1024.0, (NX*NYPADDED*sizeof *walls)/1024.0/1024.0);
 
 	// Begin iterations
 	double timeElapsed = GetWallTime();
@@ -151,14 +149,14 @@ int main(void)
 				double complete = (double)n/(double)NTIMESTEPS;
 				int secElap = (int)(GetWallTime()-timeElapsed);
 				int secRem = (int)(secElap/complete*(1.0-complete));
-				double avgbw = 4.0*n*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
+				double avgbw = 2.0*n*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
 				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
 				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, n/(double)secElap,
 				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
 			}
 		}
 		if (n % SAVELATTICEEVERY == 0) {
-			//PrintLattice(n, f);
+			PrintLattice(n, f);
 		}
 
 		// Do a timestep
@@ -172,11 +170,10 @@ int main(void)
 
 
 	// print final run stats
-	int secElap = (int)(timeElapsed);
-	double avgbw = 4.0*NTIMESTEPS*sizeof(real_t)*NX*NY*NSPEEDS/(timeElapsed)/1024/1024/1024;
+	double avgbw = 2.0*NTIMESTEPS*sizeof(real_t)*NX*NY*NSPEEDS/timeElapsed/1024/1024/1024;
 	printf("100.0%%--Elapsed: %3dm%02ds,                     [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
-	       secElap/60, secElap%60, NTIMESTEPS/(double)secElap, avgbw,
-	       FLOPPERLATTICEPOINT*NX*NY*NTIMESTEPS/(double)secElap/1000.0/1000.0/1000.0);
+	       (int)timeElapsed/60, (int)timeElapsed%60, NTIMESTEPS/timeElapsed, avgbw,
+	       FLOPPERLATTICEPOINT*NX*NY*NTIMESTEPS/timeElapsed/1000.0/1000.0/1000.0);
 	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(fA, walls));
 
 

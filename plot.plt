@@ -9,10 +9,11 @@ set logscale cb
 
 ! mkdir /tmp/gnuplot-tmp
 
-do for [i=0:133000:1000] {
-	set output sprintf("/tmp/gnuplot-tmp/tmp%04d.png",i/1000+1)
+skip=100
+do for [i=0:29900:skip] {
+	set output sprintf("/tmp/gnuplot-tmp/tmp%04d.png",i/skip+1)
 	plot 'data/'.i.'.csv' matrix with image
 }
 
 ! ffmpeg -i /tmp/gnuplot-tmp/tmp%04d.png -y -c:v mpeg4 -q:v 1 test.avi
-! rm -r /tmp/gnuplot-tmp
+# ! rm -r /tmp/gnuplot-tmp
