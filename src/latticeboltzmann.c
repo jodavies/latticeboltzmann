@@ -11,7 +11,7 @@ between lattice points, that is, the up/down, left/right and diagonals. We denot
    f7  f4  f8
 
 Define local macroscopic variables: fluid density rho = Sum f_i
-                                    velocity u = 1/rho Sum f_i e_i   (ei are unit vectors along the links)
+                                    velocity u = 1/rho Sum f_i e_i   (ei are vectors along the links)
 
 The particle distribution functions are updated each timestep:
    f_i(x+e_i*dt, t+dt) = f_i(x,t) - 1/tau [f_i(x,t) - feq_i(x,t)]
@@ -38,11 +38,10 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 
 // OpenCL Stuff
-int InitialiseCLEnvironment(cl_platform_id*, cl_device_id*, cl_context*, cl_command_queue*, cl_program*);
-void CleanUpCLEnvironment(cl_platform_id*, cl_device_id*, cl_context*, cl_command_queue*, cl_program*);
+int InitialiseCLEnvironment(cl_platform_id**, cl_device_id***, cl_context*, cl_command_queue*, cl_program*);
+void CleanUpCLEnvironment(cl_platform_id**, cl_device_id***, cl_context*, cl_command_queue*, cl_program*);
 void CheckOpenCLError(cl_int err, int line);
 
-#define MAXDEVICES 2
 #define NQUEUES 1
 char *kernelFileName = "src/latticeboltzmannkernels.cl";
 
@@ -79,8 +78,8 @@ int main(void)
 
 
 	// Set up OpenCL environment
-	cl_platform_id    platform[2];
-	cl_device_id      device_id[MAXDEVICES];
+	cl_platform_id    *platform;
+	cl_device_id      **device_id;
 	cl_context        context;
 	cl_command_queue  queue[NQUEUES];
 	cl_program        program;
@@ -88,7 +87,7 @@ int main(void)
 	cl_int            err;
 	cl_mem            device_fA, device_fB, device_walls;
 
-	if (InitialiseCLEnvironment(platform, device_id, &context, queue, &program) == EXIT_FAILURE) {
+	if (InitialiseCLEnvironment(&platform, &device_id, &context, queue, &program) == EXIT_FAILURE) {
 		printf("Error initialising OpenCL environment\n");
 		return EXIT_FAILURE;
 	}
@@ -96,7 +95,7 @@ int main(void)
 
 	//set size of local and global work groups. want 0th dimension to be the "inner loop"
 	size_t globalSize[2], localSize[2];
-	localSize[0] = 128;
+	localSize[0] = 64;
 	localSize[1] = 4;
 	globalSize[0] = localSize[0]*((NY-1)/localSize[0])+localSize[0];
 	globalSize[1] = localSize[1]*((NX-1)/localSize[1])+localSize[1];
@@ -171,8 +170,9 @@ int main(void)
 			}
 		}
 		if (n % SAVELATTICEEVERY == 0) {
-			//clEnqueueReadBuffer(queue[0], device_fA, CL_TRUE, 0, NX*NY*NSPEEDS*sizeof(real_t), f, 0, NULL, NULL);
-			//PrintLattice(n, f);
+			clFinish(queue[0]);
+			clEnqueueReadBuffer(queue[0], device_fA, CL_TRUE, 0, NX*NY*NSPEEDS*sizeof(real_t), f, 0, NULL, NULL);
+			PrintLattice(n, f);
 		}
 
 		// Do a timestep -- run kernels
@@ -202,7 +202,7 @@ int main(void)
 	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(f, walls));
 
 
-	CleanUpCLEnvironment(platform, device_id, &context, queue, &program);
+//	CleanUpCLEnvironment(platform, device_id, &context, queue, &program);
 	// Free dynamically allocated memory
 	_mm_free(f);
 	_mm_free(walls);
@@ -331,7 +331,7 @@ double GetWallTime(void)
 
 
 // OpenCL functions
-int InitialiseCLEnvironment(cl_platform_id *platform, cl_device_id *device_id, cl_context *context, cl_command_queue *queue, cl_program *program)
+int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id, cl_context *context, cl_command_queue *queue, cl_program *program)
 {
 	//error flag
 	cl_int err;
@@ -343,39 +343,45 @@ int InitialiseCLEnvironment(cl_platform_id *platform, cl_device_id *device_id, c
 	long fileLength = ftell(kernelFile);
 	rewind(kernelFile);
 	char *kernelSource = malloc(fileLength*sizeof(char));
-	fread(kernelSource, fileLength, sizeof(char), kernelFile);
+	long read = fread(kernelSource, sizeof(char), fileLength, kernelFile);
+	if (fileLength != read) printf("Error reading kernel file, line %d\n", __LINE__);
 	fclose(kernelFile);
 
-	//bind to platform
-//	printf("Getting CL Platform...\n");
-	err = clGetPlatformIDs(2, platform, NULL);
-	if (err != CL_SUCCESS) {
-		printf("Error in clGetPlatformIDs, line %d.\n", __LINE__);
-		return EXIT_FAILURE;
-	}
-	clGetPlatformInfo(platform[0],CL_PLATFORM_VENDOR,sizeof(infostring),infostring,NULL);
-	printf("---OpenCL: Platform Vendor: %s\n",infostring);
-	clGetPlatformInfo(platform[1],CL_PLATFORM_VENDOR,sizeof(infostring),infostring,NULL);
-	printf("---OpenCL: Platform Vendor: %s\n",infostring);
-
-	//get device ID
-	err  = clGetDeviceIDs(platform[0], CL_DEVICE_TYPE_ALL, 1, device_id, NULL);
-	err |= clGetDeviceIDs(platform[1], CL_DEVICE_TYPE_ALL, 1, &device_id[1], NULL);
+	//get platform and device information
+	cl_uint numPlatforms;
+	err = clGetPlatformIDs(0, NULL, &numPlatforms);
+	*platform = malloc(numPlatforms * sizeof(cl_platform_id));
+	*device_id = malloc(numPlatforms * sizeof(cl_device_id*));
+	err |= clGetPlatformIDs(numPlatforms, *platform, NULL);
 	CheckOpenCLError(err, __LINE__);
-	char deviceName[50];
-	for (int i = 0; i < 2; i++) {
-		clGetDeviceInfo(device_id[i], CL_DEVICE_NAME, sizeof(deviceName), deviceName, NULL);
-		printf("---OpenCL: Device found: %d. %s\n", i, deviceName);
-		cl_ulong maxAlloc;
-		clGetDeviceInfo(device_id[i], CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(maxAlloc), &maxAlloc, NULL);
-		printf("---OpenCL:    CL_DEVICE_MAX_MEM_ALLOC_SIZE: %lu MB\n", maxAlloc/1024/1024);
+
+	for (int i = 0; i < numPlatforms; i++) {
+		clGetPlatformInfo((*platform)[i], CL_PLATFORM_VENDOR, sizeof(infostring), infostring, NULL);
+		printf("\n---OpenCL: Platform Vendor: %s\n", infostring);
+
+		cl_uint numDevices;
+		err = clGetDeviceIDs((*platform)[i], CL_DEVICE_TYPE_ALL, 0, NULL, &numDevices);
+		CheckOpenCLError(err, __LINE__);
+		(*device_id)[i] = malloc(numDevices * sizeof(cl_device_id));
+		for (int j = 0; j < numDevices; j++) {
+			err |= clGetDeviceIDs((*platform)[i], CL_DEVICE_TYPE_ALL, numDevices, &((*device_id)[i][j]), NULL);
+			CheckOpenCLError(err, __LINE__);
+			char deviceName[200];
+			clGetDeviceInfo((*device_id)[i][j], CL_DEVICE_NAME, sizeof(deviceName), deviceName, NULL);
+			printf("---OpenCL:    Device found %d. %s\n", j, deviceName);
+			cl_ulong maxAlloc;
+			clGetDeviceInfo((*device_id)[i][j], CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(maxAlloc), &maxAlloc, NULL);
+			printf("---OpenCL:       CL_DEVICE_MAX_MEM_ALLOC_SIZE: %lu MB\n", maxAlloc/1024/1024);
+		}
 	}
 
+	// HERE WE NEED TO HAVE SPECIFIED A PLATFORM AND DEVICE
+	printf("\n---OpenCL: Using platform %d, device %d\n", PLATFORM, DEVICE);
 	//create a context
-	*context = clCreateContext(NULL, 1, &device_id[DEVICE], NULL, NULL, &err);
+	*context = clCreateContext(NULL, 1, &(*device_id[PLATFORM][DEVICE]), NULL, NULL, &err);
 	CheckOpenCLError(err, __LINE__);
 	//create a queue
-	*queue = clCreateCommandQueue(*context, device_id[DEVICE], 0, &err);
+	*queue = clCreateCommandQueue(*context, *device_id[PLATFORM][DEVICE], 0, &err);
 	CheckOpenCLError(err, __LINE__);
 
 	//create the program with the source above
@@ -392,7 +398,7 @@ int InitialiseCLEnvironment(cl_platform_id *platform, cl_device_id *device_id, c
 	if (err != CL_SUCCESS) {
 		printf("Error in clBuildProgram: %d, line %d.\n", err, __LINE__);
 		char buffer[5000];
-		clGetProgramBuildInfo(*program, device_id[0], CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, NULL);
+		clGetProgramBuildInfo(*program, (*device_id)[PLATFORM][DEVICE], CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, NULL);
 		printf("%s\n", buffer);
 		return EXIT_FAILURE;
 	}
@@ -403,12 +409,20 @@ int InitialiseCLEnvironment(cl_platform_id *platform, cl_device_id *device_id, c
 
 
 
-void CleanUpCLEnvironment(cl_platform_id *platform, cl_device_id *device_id, cl_context *context, cl_command_queue *queue, cl_program *program)
+void CleanUpCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id, cl_context *context, cl_command_queue *queue, cl_program *program)
 {
 	//release CL resources
 	clReleaseProgram(*program);
 	clReleaseCommandQueue(*queue);
 	clReleaseContext(*context);
+
+	cl_uint numPlatforms;
+	clGetPlatformIDs(0, NULL, &numPlatforms);
+	for (int i = 0; i < numPlatforms; i++) {
+		free(*device_id[i]);
+	}
+	free(*platform);
+	free(*device_id);
 }
 
 

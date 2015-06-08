@@ -1,11 +1,12 @@
 // precision
-//#define DOUBLEPREC 1
-//#pragma OPENCL EXTENSION cl_khr_fp64 : enable
-//	typedef double real_t;
-#define SINGLEPREC 1
-	typedef float real_t;
+#define DOUBLEPREC 1
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+	typedef double real_t;
+//#define SINGLEPREC 1
+//	typedef float real_t;
 
-// device: 0 for CPU, 1 for GPU
+// platform and device
+#define PLATFORM 0
 #define DEVICE 1
 
 // d2q9 fixed parameters
@@ -15,14 +16,14 @@
 #define OMEGA58 (1.0/36.0)
 
 // variable parameters
-#define NX 800
-#define NY 5000
+#define NX 400
+#define NY 2000
 #define TAU 0.7
 #define CSQ (1.0)
 
-#define NTIMESTEPS 5000
+#define NTIMESTEPS 10000
 #define PRINTSTATSEVERY 1000
-#define SAVELATTICEEVERY 100
+#define SAVELATTICEEVERY 300000
 #define ACCEL 0.005
 #define INITIALDENSITY 0.1
 
