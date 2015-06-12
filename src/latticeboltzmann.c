@@ -50,16 +50,17 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 #define NTIMESTEPS 10000
 #define PRINTSTATSEVERY 1000
-#define SAVELATTICEEVERY 1000
+#define SAVELATTICE 0
+#define SAVELATTICEEVERY 100000
 #define ACCEL 0.005
 #define INITIALDENSITY 0.1
 
 
 // Choose precision and vectorization
-#include "prec_double_avx.h"
+//#include "prec_double_avx.h"
 //#include "prec_double_sse.h"
 //#include "prec_double_serial.h"
-//#include "prec_float_avx.h"
+#include "prec_float_avx.h"
 //#include "prec_float_sse.h"
 //#include "prec_float_serial.h"
 
@@ -115,6 +116,8 @@ void InitializeArrays(
 	real_t * restrict fB,
 	char * restrict walls);
 
+void PrintRunStats(int n, double startTime);
+
 void PrintLattice(int timeStep, const real_t * restrict f);
 
 double GetWallTime(void);
@@ -140,41 +143,34 @@ int main(void)
 
 
 	// Begin iterations
-	double timeElapsed = GetWallTime();
+	double startTime = GetWallTime();
 
 	for (int n = 0; n < NTIMESTEPS; n+=2) {
 
 		if (n % PRINTSTATSEVERY == 0) {
 			if (n != 0) {
-				double complete = (double)n/(double)NTIMESTEPS;
-				int secElap = (int)(GetWallTime()-timeElapsed);
-				int secRem = (int)(secElap/complete*(1.0-complete));
-				double avgbw = 2.0*n*sizeof(real_t)*NX*NY*NSPEEDS/(GetWallTime()-timeElapsed)/1024/1024/1024;
-				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
-				       complete*100, secElap/60, secElap%60, secRem/60, secRem%60, n/(double)secElap,
-				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
+				PrintRunStats(n, startTime);
 			}
 		}
+#if SAVELATTICE == 1
 		if (n % SAVELATTICEEVERY == 0) {
-			PrintLattice(n, f);
+			PrintLattice(n, fA);
 		}
+#endif
 
 		// Do a timestep
 		DoTimeStep(fA, fB, walls);
 
 	}
 
-	timeElapsed = GetWallTime() - timeElapsed;
+	double timeElapsed = GetWallTime() - startTime;
 
 	// End iterations
 
 
 	// print final run stats
-	double avgbw = 2.0*NTIMESTEPS*sizeof(real_t)*NX*NY*NSPEEDS/timeElapsed/1024/1024/1024;
-	printf("100.0%%--Elapsed: %3dm%02ds,                     [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
-	       (int)timeElapsed/60, (int)timeElapsed%60, NTIMESTEPS/timeElapsed, avgbw,
-	       FLOPPERLATTICEPOINT*NX*NY*NTIMESTEPS/timeElapsed/1000.0/1000.0/1000.0);
-	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(fA, walls));
+	PrintRunStats(NTIMESTEPS, startTime);
+	printf("Runtime: %lf Re %.10le\n", timeElapsed, ComputeReynolds(fA, walls));
 
 
 	// Free dynamically allocated memory
@@ -651,4 +647,18 @@ double GetWallTime(void)
 	struct timespec tv;
 	clock_gettime(CLOCK_REALTIME, &tv);
 	return (double)tv.tv_sec + 1e-9*(double)tv.tv_nsec;
+}
+
+
+
+void PrintRunStats(int n, double startTime)
+{
+	double complete = (double)n/(double)NTIMESTEPS;
+	double timeElap = GetWallTime()-startTime;
+	double timeRem = timeElap/complete*(1.0-complete);
+	double avgbw = (2.0*n*sizeof(real_t)*NX*NY*NSPEEDS + 2.0*n*sizeof(real_t)*NX*6 + sizeof(int)*NX*NY)
+	               /timeElap/1024.0/1024.0/1024.0;
+	printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
+	       complete*100, (int)timeElap/60, (int)timeElap%60, (int)timeRem/60, (int)timeRem%60, n/timeElap,
+	       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/timeElap/1000.0/1000.0/1000.0);
 }
