@@ -1,13 +1,13 @@
 // precision
-#define DOUBLEPREC 1
-#pragma OPENCL EXTENSION cl_khr_fp64 : enable
-	typedef double real_t;
-//#define SINGLEPREC 1
-//	typedef float real_t;
+//#define DOUBLEPREC 1
+//#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+//	typedef double real_t;
+#define SINGLEPREC 1
+	typedef float real_t;
 
 // platform and device
-#define PLATFORM 0
-#define DEVICE 1
+#define PLATFORM 1
+#define DEVICE 0
 
 // d2q9 fixed parameters
 #define NSPEEDS 9
@@ -23,6 +23,7 @@
 
 #define NTIMESTEPS 10000
 #define PRINTSTATSEVERY 1000
+#define SAVELATTICE 0
 #define SAVELATTICEEVERY 300000
 #define ACCEL 0.005
 #define INITIALDENSITY 0.1

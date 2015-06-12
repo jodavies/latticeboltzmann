@@ -55,6 +55,8 @@ void InitializeArrays(
 	real_t * restrict f,
 	int * restrict walls);
 
+void PrintRunStats(int n, double startTime);
+
 void PrintLattice(int timeStep, const real_t * restrict f);
 
 double GetWallTime(void);
@@ -95,8 +97,8 @@ int main(void)
 
 	//set size of local and global work groups. want 0th dimension to be the "inner loop"
 	size_t globalSize[2], localSize[2];
-	localSize[0] = 64;
-	localSize[1] = 4;
+	localSize[0] = 32;
+	localSize[1] = 1;
 	globalSize[0] = localSize[0]*((NY-1)/localSize[0])+localSize[0];
 	globalSize[1] = localSize[1]*((NX-1)/localSize[1])+localSize[1];
 	printf("---OpenCL: Using localSize: %dx%d, globalSize: %dx%d.\n",
@@ -146,7 +148,7 @@ int main(void)
 
 
 	// Start timing here. We include transfers to and from device in timing for comparison with CPU
-	double timeElapsed = GetWallTime();
+	double startTime = GetWallTime();
 	err = 0;
 
 	// Copy initial arrays to device:
@@ -160,20 +162,16 @@ int main(void)
 		if (n % PRINTSTATSEVERY == 0) {
 			clFinish(queue[0]);
 			if (n != 0) {
-				double complete = (double)n/(double)NTIMESTEPS;
-				double secElap = GetWallTime()-timeElapsed;
-				double secRem = secElap/complete*(1.0-complete);
-				double avgbw = (2.0*n*sizeof(real_t)*NX*NY*NSPEEDS + 2.0*n*sizeof(real_t)*NX*6)/(GetWallTime()-timeElapsed)/1024/1024/1024;
-				printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
-				       complete*100, (int)secElap/60, (int)secElap%60, (int)secRem/60, (int)secRem%60, n/(double)secElap,
-				       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/(double)secElap/1000.0/1000.0/1000.0);
+				PrintRunStats(n, startTime);
 			}
 		}
+#if SAVELATTICE == 1
 		if (n % SAVELATTICEEVERY == 0) {
 			clFinish(queue[0]);
 			clEnqueueReadBuffer(queue[0], device_fA, CL_TRUE, 0, NX*NY*NSPEEDS*sizeof(real_t), f, 0, NULL, NULL);
 			PrintLattice(n, f);
 		}
+#endif
 
 		// Do a timestep -- run kernels
 		err = clEnqueueNDRangeKernel(queue[0], ApplySourceKernelA, 1, NULL, &globalSizeApplySource, &localSizeApplySource, 0, NULL, NULL);
@@ -191,18 +189,15 @@ int main(void)
 
 	// Complete queue and stop timer
 	clFinish(queue[0]);
-	timeElapsed = GetWallTime() - timeElapsed;
+	double timeElapsed = GetWallTime() - startTime;
 
 
 	// print final run stats
-	double avgbw = (2.0*NTIMESTEPS*sizeof(real_t)*NX*NY*NSPEEDS + 2.0*NTIMESTEPS*sizeof(real_t)*NX*6)/timeElapsed/1024/1024/1024;
-	printf("100.0%%--Elapsed: %3dm%02ds,                     [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
-	       (int)timeElapsed/60, (int)timeElapsed%60, NTIMESTEPS/timeElapsed, avgbw,
-	       FLOPPERLATTICEPOINT*NX*NY*NTIMESTEPS/timeElapsed/1000.0/1000.0/1000.0);
-	printf("Time: %lf Re %.10le\n", timeElapsed, ComputeReynolds(f, walls));
+	PrintRunStats(NTIMESTEPS, startTime);
+	printf("Runtime: %lf Re %.10le\n", timeElapsed, ComputeReynolds(f, walls));
 
 
-//	CleanUpCLEnvironment(platform, device_id, &context, queue, &program);
+	CleanUpCLEnvironment(&platform, &device_id, &context, queue, &program);
 	// Free dynamically allocated memory
 	_mm_free(f);
 	_mm_free(walls);
@@ -330,6 +325,21 @@ double GetWallTime(void)
 }
 
 
+
+void PrintRunStats(int n, double startTime)
+{
+	double complete = (double)n/(double)NTIMESTEPS;
+	double timeElap = GetWallTime()-startTime;
+	double timeRem = timeElap/complete*(1.0-complete);
+	double avgbw = (2.0*n*sizeof(real_t)*NX*NY*NSPEEDS + 2.0*n*sizeof(real_t)*NX*6 + sizeof(int)*NX*NY)
+	               /timeElap/1024.0/1024.0/1024.0;
+	printf("%5.2lf%%--Elapsed: %3dm%02ds, Remaining: %3dm%02ds. [Updates/s: %.3le, Update BW: ~%.3lf GB/s, GFLOPs: ~%.3lf]\n",
+	       complete*100, (int)timeElap/60, (int)timeElap%60, (int)timeRem/60, (int)timeRem%60, n/timeElap,
+	       avgbw, FLOPPERLATTICEPOINT*NX*NY*n/timeElap/1000.0/1000.0/1000.0);
+}
+
+
+
 // OpenCL functions
 int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id, cl_context *context, cl_command_queue *queue, cl_program *program)
 {
@@ -378,10 +388,10 @@ int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id
 	// HERE WE NEED TO HAVE SPECIFIED A PLATFORM AND DEVICE
 	printf("\n---OpenCL: Using platform %d, device %d\n", PLATFORM, DEVICE);
 	//create a context
-	*context = clCreateContext(NULL, 1, &(*device_id[PLATFORM][DEVICE]), NULL, NULL, &err);
+	*context = clCreateContext(NULL, 1, &((*device_id)[PLATFORM][DEVICE]), NULL, NULL, &err);
 	CheckOpenCLError(err, __LINE__);
 	//create a queue
-	*queue = clCreateCommandQueue(*context, *device_id[PLATFORM][DEVICE], 0, &err);
+	*queue = clCreateCommandQueue(*context, (*device_id)[PLATFORM][DEVICE], 0, &err);
 	CheckOpenCLError(err, __LINE__);
 
 	//create the program with the source above
@@ -403,6 +413,16 @@ int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id
 		return EXIT_FAILURE;
 	}
 
+	// dump ptx
+	size_t binSize;
+	clGetProgramInfo(*program, CL_PROGRAM_BINARY_SIZES, sizeof(size_t), &binSize, NULL);
+	unsigned char *bin = malloc(binSize);
+	clGetProgramInfo(*program, CL_PROGRAM_BINARIES, sizeof(unsigned char *), &bin, NULL);
+	FILE *fp = fopen("openclPTX.ptx", "wb");
+	fwrite(bin, sizeof(char), binSize, fp);
+	fclose(fp);
+	free(bin);
+
 	free(kernelSource);
 	return EXIT_SUCCESS;
 }
@@ -419,7 +439,7 @@ void CleanUpCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id, 
 	cl_uint numPlatforms;
 	clGetPlatformIDs(0, NULL, &numPlatforms);
 	for (int i = 0; i < numPlatforms; i++) {
-		free(*device_id[i]);
+		free((*device_id)[i]);
 	}
 	free(*platform);
 	free(*device_id);
