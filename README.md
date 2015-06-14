@@ -41,6 +41,24 @@ Plotting the speedup relative to a single thread alongside the bandwidth improve
 ![Speedup](img/speedup.png)
 
 
+#### MPI
+By running the computation across multiple nodes with MPI, we can take advantage of the additional memory bandwidth that comes with each extra node. Since data is read from neighbouring rows, we have to exchange the data at node boundaries of the lattice before the Stream step. Rows that don't neighbour a boundary have no such dependency, so we can hide the communication behind the computation of the inner rows.
+
+![Communication without overlap](img/comms-no-overlap.png)
+
+![Communication with overlap](img/comms-overlap.png)
+
+Overlapping means that running one rank on each of 16 nodes, communication time drops from ~17% to ~8% (400x2000 lattice).
+
+We obtain reasonable scaling with node count, particularly for larger domains where each node has enough work to do to hide the communication. The speedup flattens out when we saturate the gigabit ethernet interconnects at around ~165MB/s.
+
+![MPI Runtime](img/mpi-runtimes.png)
+
+![MPI Speedup](img/mpi-speedup.png)
+
+
+
+
 
 ### GPGPU
 GPUs provide a huge amount of memory bandwidth compared to what CPUs typically have available. By writing OpenCL kernels for the computation, we can easily run the code on many devices. In the following table the i5-2500K is running with 2 threads (the fastest configuration).
