@@ -35,9 +35,9 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 
 // d2q9 fixed parameters
 #define NSPEEDS 9
-#define OMEGA0  (4.0/9.0)
-#define OMEGA14 (1.0/9.0)
-#define OMEGA58 (1.0/36.0)
+#define OMEGA0  (REAL_T(4.0)/REAL_T(9.0))
+#define OMEGA14 (REAL_T(1.0)/REAL_T(9.0))
+#define OMEGA58 (REAL_T(1.0)/REAL_T(36.0))
 
 // Boundary condition. Wrap-around (periodic) or not (fluid flows out of the domain)
 #define WRAPAROUND 1
@@ -45,15 +45,15 @@ Arrays indexed: (A(0,0) A(0,1) A(0,2) ...
 // variable parameters
 #define NX 400
 #define NY 2000
-#define TAU 0.7
-#define CSQ (1.0)
+#define TAU REAL_T(0.7)
+#define CSQ REAL_T(1.0)
 
 #define NTIMESTEPS 10000
 #define PRINTSTATSEVERY 1000
 #define SAVELATTICE 0
 #define SAVELATTICEEVERY 100000
-#define ACCEL 0.005
-#define INITIALDENSITY 0.1
+#define ACCEL REAL_T(0.005)
+#define INITIALDENSITY REAL_T(0.1)
 
 
 // Choose precision and vectorization
@@ -255,7 +255,7 @@ void StreamCollide(
 			}
 
 			else {
-				real_t density = 0;
+				real_t density = REAL_T(0.0);
 				for (int s = 0; s < NSPEEDS; s++) {
 					density += fTmp[s];
 				}
@@ -280,15 +280,15 @@ void StreamCollide(
 
 				// equilibrium density
 				real_t fequ[NSPEEDS];
-				fequ[0] = OMEGA0 * density * (1 - 3.0/2.0*uDotu/CSQ);
-				fequ[1] = OMEGA14* density * (1 + 3.0*u[1]/CSQ +9.0/2.0*u[1]*u[1]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[2] = OMEGA14* density * (1 + 3.0*u[2]/CSQ +9.0/2.0*u[2]*u[2]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[3] = OMEGA14* density * (1 + 3.0*u[3]/CSQ +9.0/2.0*u[3]*u[3]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[4] = OMEGA14* density * (1 + 3.0*u[4]/CSQ +9.0/2.0*u[4]*u[4]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[5] = OMEGA58* density * (1 + 3.0*u[5]/CSQ +9.0/2.0*u[5]*u[5]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[6] = OMEGA58* density * (1 + 3.0*u[6]/CSQ +9.0/2.0*u[6]*u[6]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[7] = OMEGA58* density * (1 + 3.0*u[7]/CSQ +9.0/2.0*u[7]*u[7]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
-				fequ[8] = OMEGA58* density * (1 + 3.0*u[8]/CSQ +9.0/2.0*u[8]*u[8]/CSQ/CSQ -3.0/2.0*uDotu/CSQ);
+				fequ[0] = OMEGA0 * density * (REAL_T(1.0) - REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[1] = OMEGA14* density * (REAL_T(1.0) + REAL_T(3.0)*u[1]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[1]*u[1]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[2] = OMEGA14* density * (REAL_T(1.0) + REAL_T(3.0)*u[2]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[2]*u[2]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[3] = OMEGA14* density * (REAL_T(1.0) + REAL_T(3.0)*u[3]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[3]*u[3]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[4] = OMEGA14* density * (REAL_T(1.0) + REAL_T(3.0)*u[4]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[4]*u[4]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[5] = OMEGA58* density * (REAL_T(1.0) + REAL_T(3.0)*u[5]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[5]*u[5]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[6] = OMEGA58* density * (REAL_T(1.0) + REAL_T(3.0)*u[6]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[6]*u[6]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[7] = OMEGA58* density * (REAL_T(1.0) + REAL_T(3.0)*u[7]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[7]*u[7]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
+				fequ[8] = OMEGA58* density * (REAL_T(1.0) + REAL_T(3.0)*u[8]/CSQ +REAL_T(9.0)/REAL_T(2.0)*u[8]*u[8]/CSQ/CSQ -REAL_T(3.0)/REAL_T(2.0)*uDotu/CSQ);
 
 				// relaxation:
 				for (int s = 0; s < NSPEEDS; s++) {
@@ -311,16 +311,16 @@ void StreamCollideVec(
 	real_t * restrict fDst,
 	const char * restrict walls)
 {
-	const vector_t _one = VECTOR_SET1(1.0);
-	const vector_t _three = VECTOR_SET1(3.0);
-	const vector_t _half = VECTOR_SET1(0.5);
-	const vector_t _threeOtwo = VECTOR_SET1(1.5);
+	const vector_t _one = VECTOR_SET1(REAL_T(1.0));
+	const vector_t _three = VECTOR_SET1(REAL_T(3.0));
+	const vector_t _half = VECTOR_SET1(REAL_T(0.5));
+	const vector_t _threeOtwo = VECTOR_SET1(REAL_T(1.5));
 
-	const vector_t _ICSQ = VECTOR_SET1(1.0/CSQ);
+	const vector_t _ICSQ = VECTOR_SET1(REAL_T(1.0)/CSQ);
 	const vector_t _OMEGA0 = VECTOR_SET1(OMEGA0);
 	const vector_t _OMEGA14 = VECTOR_SET1(OMEGA14);
 	const vector_t _OMEGA58 = VECTOR_SET1(OMEGA58);
-	const vector_t _ITAU = VECTOR_SET1(1.0/TAU);
+	const vector_t _ITAU = VECTOR_SET1(REAL_T(1.0)/TAU);
 
 	// Copy to temporary array
 	real_t fTmp[NSPEEDS*VECWIDTH];
@@ -357,7 +357,7 @@ void StreamCollideVec(
 			_mm_prefetch(&fSrc[I(i+1,j+VECWIDTH, 7)],0);
 			_mm_prefetch(&fSrc[I(i+1,j+VECWIDTH, 8)],0);
 
-			vector_t _density = VECTOR_SET1(0.0);
+			vector_t _density = VECTOR_SET1(REAL_T(0.0));
 
 			vector_t _f0 = VECTOR_LOAD(&fTmp[VECWIDTH*0]);
 			vector_t _f1 = VECTOR_LOAD(&fTmp[VECWIDTH*1]);
@@ -401,12 +401,12 @@ void StreamCollideVec(
 			_u_y = VECTOR_MUL(_u_y, VECTOR_MUL(_three, _ICSQ));
 			vector_t _u1 = _u_y;
 			vector_t _u2 = _u_x;
-			vector_t _u3 = VECTOR_MUL(VECTOR_SET1(-1.0),_u_y);
-			vector_t _u4 = VECTOR_MUL(VECTOR_SET1(-1.0),_u_x);
+			vector_t _u3 = VECTOR_MUL(VECTOR_SET1(REAL_T(-1.0)),_u_y);
+			vector_t _u4 = VECTOR_MUL(VECTOR_SET1(REAL_T(-1.0)),_u_x);
 			vector_t _u5 = VECTOR_ADD(_u_x,_u_y);
 			vector_t _u6 = VECTOR_SUB(_u_x,_u_y);
-			vector_t _u7 = VECTOR_MUL(VECTOR_SET1(-1.0),VECTOR_ADD(_u_x,_u_y));
-			vector_t _u8 = VECTOR_MUL(VECTOR_SET1(-1.0),VECTOR_SUB(_u_x,_u_y));
+			vector_t _u7 = VECTOR_MUL(VECTOR_SET1(REAL_T(-1.0)),VECTOR_ADD(_u_x,_u_y));
+			vector_t _u8 = VECTOR_MUL(VECTOR_SET1(REAL_T(-1.0)),VECTOR_SUB(_u_x,_u_y));
 
 
 			// equilibrium density
@@ -493,23 +493,23 @@ void ApplySource(
 
 	// Accelerate the flow so we have a pipe with fluid flowing along it.
 	// Increase "incoming" f, decrease "outgoing" (ie, leaving the domain) down the first column
-	const real_t accelParameter = ACCEL;
+
 	const int j = 0;
 	for (int i = 0; i < NX; i++) {
 
 		if (walls[I(i,0, 0)] == 0) {
 			// check none of the "outgoing" densities will end up negative. f is strictly >= 0!
-			if (  (f[I(i,j, 6)] - accelParameter*OMEGA58 > 0.0)
-			    &&(f[I(i,j, 3)] - accelParameter*OMEGA14 > 0.0)
-			    &&(f[I(i,j, 7)] - accelParameter*OMEGA58 > 0.0) ) {
+			if (  (f[I(i,j, 6)] - ACCEL*OMEGA58 > REAL_T(0.0))
+			    &&(f[I(i,j, 3)] - ACCEL*OMEGA14 > REAL_T(0.0))
+			    &&(f[I(i,j, 7)] - ACCEL*OMEGA58 > REAL_T(0.0)) ) {
 
-				f[I(i,j, 6)] -= accelParameter*OMEGA58;
-				f[I(i,j, 3)] -= accelParameter*OMEGA14;
-				f[I(i,j, 7)] -= accelParameter*OMEGA58;
+				f[I(i,j, 6)] -= ACCEL*OMEGA58;
+				f[I(i,j, 3)] -= ACCEL*OMEGA14;
+				f[I(i,j, 7)] -= ACCEL*OMEGA58;
 
-				f[I(i,j, 5)] += accelParameter*OMEGA58;
-				f[I(i,j, 1)] += accelParameter*OMEGA14;
-				f[I(i,j, 8)] += accelParameter*OMEGA58;
+				f[I(i,j, 5)] += ACCEL*OMEGA58;
+				f[I(i,j, 1)] += ACCEL*OMEGA14;
+				f[I(i,j, 8)] += ACCEL*OMEGA58;
 			}
 
 		}
@@ -541,9 +541,9 @@ real_t ComputeReynolds(
 		}
 	}
 
-	real_t viscosity = 1.0/3.0 * (TAU - 1.0/2.0);
+	real_t viscosity = REAL_T(1.0)/REAL_T(3.0) * (TAU - REAL_T(1.0)/REAL_T(2.0));
 
-	return u_yTotal/(real_t)latticePoints * 10 / viscosity;
+	return u_yTotal/(real_t)latticePoints * REAL_T(10.0) / viscosity;
 }
 
 
@@ -553,8 +553,6 @@ void InitializeArrays(
 	real_t * restrict fB,
 	char * restrict walls)
 {
-	const real_t initialf = INITIALDENSITY;
-
 	// It is important that we initialize the arrays in parallel, with the same scheduling as the computation loops.
 	// This allows memory to be allocated correctly for NUMA systems, with a "first touch" policy.
 
@@ -582,25 +580,25 @@ void InitializeArrays(
 #pragma omp parallel for default(none) shared(fA,fB) schedule(static)
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
-			fA[I(i,j, 0)] = initialf * OMEGA0;
-			fA[I(i,j, 1)] = initialf * OMEGA14;
-			fA[I(i,j, 2)] = initialf * OMEGA14;
-			fA[I(i,j, 3)] = initialf * OMEGA14;
-			fA[I(i,j, 4)] = initialf * OMEGA14;
-			fA[I(i,j, 5)] = initialf * OMEGA58;
-			fA[I(i,j, 6)] = initialf * OMEGA58;
-			fA[I(i,j, 7)] = initialf * OMEGA58;
-			fA[I(i,j, 8)] = initialf * OMEGA58;
+			fA[I(i,j, 0)] = INITIALDENSITY * OMEGA0;
+			fA[I(i,j, 1)] = INITIALDENSITY * OMEGA14;
+			fA[I(i,j, 2)] = INITIALDENSITY * OMEGA14;
+			fA[I(i,j, 3)] = INITIALDENSITY * OMEGA14;
+			fA[I(i,j, 4)] = INITIALDENSITY * OMEGA14;
+			fA[I(i,j, 5)] = INITIALDENSITY * OMEGA58;
+			fA[I(i,j, 6)] = INITIALDENSITY * OMEGA58;
+			fA[I(i,j, 7)] = INITIALDENSITY * OMEGA58;
+			fA[I(i,j, 8)] = INITIALDENSITY * OMEGA58;
 
-			fB[I(i,j, 0)] = 0.0;
-			fB[I(i,j, 1)] = 0.0;
-			fB[I(i,j, 2)] = 0.0;
-			fB[I(i,j, 3)] = 0.0;
-			fB[I(i,j, 4)] = 0.0;
-			fB[I(i,j, 5)] = 0.0;
-			fB[I(i,j, 6)] = 0.0;
-			fB[I(i,j, 7)] = 0.0;
-			fB[I(i,j, 8)] = 0.0;
+			fB[I(i,j, 0)] = REAL_T(0.0);
+			fB[I(i,j, 1)] = REAL_T(0.0);
+			fB[I(i,j, 2)] = REAL_T(0.0);
+			fB[I(i,j, 3)] = REAL_T(0.0);
+			fB[I(i,j, 4)] = REAL_T(0.0);
+			fB[I(i,j, 5)] = REAL_T(0.0);
+			fB[I(i,j, 6)] = REAL_T(0.0);
+			fB[I(i,j, 7)] = REAL_T(0.0);
+			fB[I(i,j, 8)] = REAL_T(0.0);
 		}
 	}
 
