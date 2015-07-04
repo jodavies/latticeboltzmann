@@ -64,6 +64,7 @@ We obtain reasonable scaling with node count, particularly for larger domains wh
 GPUs provide a huge amount of memory bandwidth compared to what CPUs typically have available. By writing OpenCL kernels for the computation, we can easily run the code on many devices. In the following tables the i5-2500K is running with 2 threads (the fastest configuration).
 
 Lattice: 400x2000, 10,000 timesteps.
+
 | Device           | Runtime (s) DP | Speedup | Runtime (s) SP | Speedup |
 |:-----------------|:---------------|:--------|:---------------|:--------|
 | i5-2500K AVX     | 110.31         | 1.00    | 55.89          | 1.00    |
@@ -75,6 +76,7 @@ Lattice: 400x2000, 10,000 timesteps.
 | AMD R9 280X      | 7.34           | 15.03   | 4.21           | 13.28   |
 
 Lattice: 400x4000, 10,000 timesteps.
+
 | Device           | Runtime (s) DP | Speedup | Runtime (s) SP | Speedup |
 |:-----------------|:---------------|:--------|:---------------|:--------|
 | i5-2500K AVX     | 224.99         | 1.00    | 113.80         | 1.00    |
