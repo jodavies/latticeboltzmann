@@ -58,6 +58,7 @@ void InitializeArrays(
 void PrintRunStats(int n, double startTime);
 
 void PrintLattice(int timeStep, const real_t * restrict f);
+void PrintSquaredDensity(int timeStep, const real_t * restrict printArray);
 
 double GetWallTime(void);
 
@@ -70,13 +71,19 @@ int main(void)
 
 	// Allocate memory. Use _mm_malloc() for alignment. Want 32byte alignment for vector instructions.
 	real_t * f;
+	real_t * printArray;
 	int * walls;
 
 	int allocSize = NX * NYPADDED * NSPEEDS;
 	printf("Lattice Size: %dx%d (%dx%d) (%lf.2 MB)\n", NX,NY, NX,NYPADDED, (double)(allocSize*sizeof(*f))/1024.0/1024.0);
 	f = _mm_malloc(allocSize * sizeof *f, 32);
-	walls = _mm_malloc(NX * NYPADDED * sizeof *walls, 32);
+
+	allocSize = NX*NYPADDED * sizeof *walls;
+	walls = _mm_malloc(allocSize, 32);
 	InitializeArrays(f, walls);
+
+	allocSize = NX*NYPADDED * sizeof *printArray;
+	printArray = _mm_malloc(allocSize, 32);
 
 
 	// Set up OpenCL environment
@@ -86,8 +93,9 @@ int main(void)
 	cl_command_queue  queue[NQUEUES];
 	cl_program        program;
 	cl_kernel         ApplySourceKernelA, ApplySourceKernelB, StreamCollideKernelA, StreamCollideKernelB;
+	cl_kernel         ComputeSquaredDensityKernelA, ComputeSquaredDensityKernelB;
 	cl_int            err;
-	cl_mem            device_fA, device_fB, device_walls;
+	cl_mem            device_fA, device_fB, device_walls, device_printArray;
 
 	if (InitialiseCLEnvironment(&platform, &device_id, &context, queue, &program) == EXIT_FAILURE) {
 		printf("Error initialising OpenCL environment\n");
@@ -95,16 +103,11 @@ int main(void)
 	}
 
 
-	//set size of local and global work groups. want 0th dimension to be the "inner loop"
-	size_t globalSize[2], localSize[2];
-	localSize[0] = 32;
-	localSize[1] = 1;
-	globalSize[0] = localSize[0]*((NY-1)/localSize[0])+localSize[0];
-	globalSize[1] = localSize[1]*((NX-1)/localSize[1])+localSize[1];
-	printf("---OpenCL: Using localSize: %dx%d, globalSize: %dx%d.\n",
-	       (int)localSize[0],(int)localSize[1], (int)globalSize[0],(int)globalSize[1]);
-	//For ApplySourceKernel, only need a 1D kernel
-	size_t localSizeApplySource = 64;
+	//set size of local and global work groups.
+	size_t localSize = LOCALSIZE;
+	size_t globalSize = localSize*((NX*NY-1)/localSize)+localSize;
+	printf("---OpenCL: Using localSize: %d, globalSize: %d.\n", (int)localSize, (int)globalSize);
+	size_t localSizeApplySource = LOCALSIZE;
 	size_t globalSizeApplySource = localSizeApplySource*((NX-1)/localSizeApplySource)+localSizeApplySource;
 
 
@@ -117,16 +120,25 @@ int main(void)
 	CheckOpenCLError(err, __LINE__);
 	StreamCollideKernelB = clCreateKernel(program, "StreamCollideKernel", &err);
 	CheckOpenCLError(err, __LINE__);
+	ComputeSquaredDensityKernelA = clCreateKernel(program, "ComputeSquaredDensityKernel", &err);
+	CheckOpenCLError(err, __LINE__);
+	ComputeSquaredDensityKernelB = clCreateKernel(program, "ComputeSquaredDensityKernel", &err);
+	CheckOpenCLError(err, __LINE__);
 
 
-	// Allocate device memory
+	// Allocate device memory, including array to store squared density for printing to file
 	size_t sizeBytes = NX*NYPADDED*NSPEEDS * sizeof *f;
 	device_fA = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeBytes, NULL, &err);
 	CheckOpenCLError(err, __LINE__);
 	device_fB = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeBytes, NULL, &err);
 	CheckOpenCLError(err, __LINE__);
+
 	sizeBytes = NX*NYPADDED * sizeof *walls;
 	device_walls = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeBytes, NULL, &err);
+	CheckOpenCLError(err, __LINE__);
+
+	sizeBytes = NX*NYPADDED * sizeof *f;
+	device_printArray = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeBytes, NULL, &err);
 	CheckOpenCLError(err, __LINE__);
 
 
@@ -144,6 +156,12 @@ int main(void)
 	err |= clSetKernelArg(StreamCollideKernelB, 0, sizeof(cl_mem), &device_fB);
 	err |= clSetKernelArg(StreamCollideKernelB, 1, sizeof(cl_mem), &device_fA);
 	err |= clSetKernelArg(StreamCollideKernelB, 2, sizeof(cl_mem), &device_walls);
+
+	err |= clSetKernelArg(ComputeSquaredDensityKernelA, 0, sizeof(cl_mem), &device_fA);
+	err |= clSetKernelArg(ComputeSquaredDensityKernelA, 1, sizeof(cl_mem), &device_printArray);
+
+	err |= clSetKernelArg(ComputeSquaredDensityKernelB, 0, sizeof(cl_mem), &device_fB);
+	err |= clSetKernelArg(ComputeSquaredDensityKernelB, 1, sizeof(cl_mem), &device_printArray);
 	CheckOpenCLError(err, __LINE__);
 
 
@@ -156,31 +174,54 @@ int main(void)
 	err |= clEnqueueWriteBuffer(queue[0], device_walls, CL_TRUE, 0, NX*NYPADDED*sizeof *walls, walls, 0, NULL, NULL);
 	CheckOpenCLError(err, __LINE__);
 
-	// Begin timesteps
-	for (int n = 0; n < NTIMESTEPS; n+=2) {
+	// Begin timesteps. Open OpenMP parallel region so we can write data to disk in the background
+	#pragma omp parallel
+	{
+		// Only one thread enqueues kernels
+		#pragma omp single
+		{
+			for (int n = 0; n < NTIMESTEPS; n+=2) {
 
-		if (n % PRINTSTATSEVERY == 0) {
-			clFinish(queue[0]);
-			if (n != 0) {
-				PrintRunStats(n, startTime);
-			}
-		}
+				if (n % PRINTSTATSEVERY == 0) {
+					clFinish(queue[0]);
+					if (n != 0) {
+						PrintRunStats(n, startTime);
+					}
+				}
+
 #if SAVELATTICE == 1
-		if (n % SAVELATTICEEVERY == 0) {
-			clFinish(queue[0]);
-			clEnqueueReadBuffer(queue[0], device_fA, CL_TRUE, 0, NX*NY*NSPEEDS*sizeof(real_t), f, 0, NULL, NULL);
-			PrintLattice(n, f);
-		}
+				if (n % SAVELATTICEEVERY == 0) {
+					// compute squared density on device
+					err = clEnqueueNDRangeKernel(queue[0], ComputeSquaredDensityKernelA, 1, NULL, &globalSize, &localSize, 0, NULL, NULL);
+					clFinish(queue[0]);
+
+					// wait for completion of previous PrintLattice. The clEnqueueReadBuffer we make next is NON BLOCKING, but
+					// the barrier here guarantees its completion, since the thread waits on the completion of the read before
+					// printing the array to file.
+					#pragma omp taskwait
+					// copy most recent timestep from device, NON-BLOCKING
+					cl_event readBufferComplete;
+					clEnqueueReadBuffer(queue[0], device_printArray, CL_FALSE, 0, NX*NYPADDED*sizeof(real_t), printArray, 0, NULL, &readBufferComplete);
+
+					// another thread completes the write to disk in the background
+					#pragma omp task
+					{
+						clWaitForEvents(1, &readBufferComplete);
+						PrintSquaredDensity(n, printArray);
+					}
+				}
 #endif
 
-		// Do a timestep -- run kernels
-		err = clEnqueueNDRangeKernel(queue[0], ApplySourceKernelA, 1, NULL, &globalSizeApplySource, &localSizeApplySource, 0, NULL, NULL);
-		err = clEnqueueNDRangeKernel(queue[0], StreamCollideKernelA, 2, NULL, globalSize, localSize, 0, NULL, NULL);
-		err = clEnqueueNDRangeKernel(queue[0], ApplySourceKernelB, 1, NULL, &globalSizeApplySource, &localSizeApplySource, 0, NULL, NULL);
-		err = clEnqueueNDRangeKernel(queue[0], StreamCollideKernelB, 2, NULL, globalSize, localSize, 0, NULL, NULL);
+				// Do a timestep -- run kernels
+				err = clEnqueueNDRangeKernel(queue[0], ApplySourceKernelA, 1, NULL, &globalSizeApplySource, &localSizeApplySource, 0, NULL, NULL);
+				err = clEnqueueNDRangeKernel(queue[0], StreamCollideKernelA, 1, NULL, &globalSize, &localSize, 0, NULL, NULL);
+				err = clEnqueueNDRangeKernel(queue[0], ApplySourceKernelB, 1, NULL, &globalSizeApplySource, &localSizeApplySource, 0, NULL, NULL);
+				err = clEnqueueNDRangeKernel(queue[0], StreamCollideKernelB, 1, NULL, &globalSize, &localSize, 0, NULL, NULL);
 
-	}
-	// End iterations
+			} // end iterations
+		} // end omp single
+	} // end omp parallel
+
 
 	// Copy array back to host
 	clFinish(queue[0]);
@@ -240,25 +281,12 @@ void InitializeArrays(
 	real_t * restrict f,
 	int * restrict walls)
 {
-	const real_t initialf = INITIALDENSITY;
 
-	// It is important that we initialize the arrays in parallel, with the same scheduling as the computation loops.
-	// This allows memory to be allocated correctly for NUMA systems, with a "first touch" policy.
-
-//#pragma omp parallel for default(none) shared(walls) schedule(static)
-	// Add walls
+	// Add walls, initialize to zero
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
 			walls[I(i,j, 0)] = 0;
 		}
-	}
-	// barrier
-	for (int i = 20; i < 220; i++) {
-		walls[I(i,100, 0)] = 1;
-		walls[I(i,101, 0)] = 1;
-		walls[I(i,102, 0)] = 1;
-		walls[I(i,103, 0)] = 1;
-		walls[I(i,104, 0)] = 1;
 	}
 	// edges top and bottom
 	for (int j = 0; j < NY; j++) {
@@ -266,18 +294,29 @@ void InitializeArrays(
 		walls[I(NX-1,j, 0)] = 1;
 	}
 
-//#pragma omp parallel for default(none) shared(f,fScratch) schedule(static)
+
+	// barrier
+	for (int i = 99; i < 300; i++) {
+		walls[I(i,100, 0)] = 1;
+		walls[I(i,101, 0)] = 1;
+		walls[I(i,102, 0)] = 1;
+		walls[I(i,103, 0)] = 1;
+		walls[I(i,104, 0)] = 1;
+	}
+
+
+	// initialize lattice
 	for (int i = 0; i < NX; i++) {
 		for (int j = 0; j < NY; j++) {
-			f[I(i,j, 0)] = initialf * OMEGA0;
-			f[I(i,j, 1)] = initialf * OMEGA14;
-			f[I(i,j, 2)] = initialf * OMEGA14;
-			f[I(i,j, 3)] = initialf * OMEGA14;
-			f[I(i,j, 4)] = initialf * OMEGA14;
-			f[I(i,j, 5)] = initialf * OMEGA58;
-			f[I(i,j, 6)] = initialf * OMEGA58;
-			f[I(i,j, 7)] = initialf * OMEGA58;
-			f[I(i,j, 8)] = initialf * OMEGA58;
+			f[I(i,j, 0)] = INITIALDENSITY * OMEGA0;
+			f[I(i,j, 1)] = INITIALDENSITY * OMEGA14;
+			f[I(i,j, 2)] = INITIALDENSITY * OMEGA14;
+			f[I(i,j, 3)] = INITIALDENSITY * OMEGA14;
+			f[I(i,j, 4)] = INITIALDENSITY * OMEGA14;
+			f[I(i,j, 5)] = INITIALDENSITY * OMEGA58;
+			f[I(i,j, 6)] = INITIALDENSITY * OMEGA58;
+			f[I(i,j, 7)] = INITIALDENSITY * OMEGA58;
+			f[I(i,j, 8)] = INITIALDENSITY * OMEGA58;
 		}
 	}
 
@@ -289,7 +328,7 @@ void InitializeArrays(
 void PrintLattice(int timeStep, const real_t * restrict f)
 {
 	char filename[100];
-	sprintf(filename,"data/%d.csv",timeStep);
+	sprintf(filename,"/mnt/Documents/tmp-data2/%d.csv",timeStep);
 	FILE *fp = fopen(filename,"w");
 
 	for (int i = 0; i < NX; i++) {
@@ -308,6 +347,25 @@ void PrintLattice(int timeStep, const real_t * restrict f)
 			real_t uSquared = u_x * u_x + u_y * u_y;
 
 			fprintf(fp,"%.10lf",uSquared);
+			if (j < NY-1) fprintf(fp,", ");
+		}
+		fprintf(fp,"\n");
+	}
+	fclose(fp);
+}
+
+
+
+void PrintSquaredDensity(int timeStep, const real_t * restrict printArray)
+{
+	char filename[100];
+	sprintf(filename,"/mnt/Documents/tmp-data2/%d.csv",timeStep);
+	FILE *fp = fopen(filename,"w");
+
+	for (int i = 0; i < NX; i++) {
+		for (int j = 0; j < NY; j++) {
+
+			fprintf(fp,"%.10lf", printArray[I(i,j, 0)]);
 			if (j < NY-1) fprintf(fp,", ");
 		}
 		fprintf(fp,"\n");
@@ -352,8 +410,10 @@ int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id
 	fseek(kernelFile, 0, SEEK_END);
 	long fileLength = ftell(kernelFile);
 	rewind(kernelFile);
-	char *kernelSource = malloc(fileLength*sizeof(char));
+	// allocate space for file + terminating \0
+	char *kernelSource = malloc((fileLength+1)*sizeof(char));
 	long read = fread(kernelSource, sizeof(char), fileLength, kernelFile);
+	kernelSource[fileLength] = '\0';
 	if (fileLength != read) printf("Error reading kernel file, line %d\n", __LINE__);
 	fclose(kernelFile);
 
@@ -367,25 +427,28 @@ int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id
 
 	for (int i = 0; i < numPlatforms; i++) {
 		clGetPlatformInfo((*platform)[i], CL_PLATFORM_VENDOR, sizeof(infostring), infostring, NULL);
-		printf("\n---OpenCL: Platform Vendor: %s\n", infostring);
+		printf("\n---OpenCL: Platform Vendor %d: %s\n", i, infostring);
 
 		cl_uint numDevices;
 		err = clGetDeviceIDs((*platform)[i], CL_DEVICE_TYPE_ALL, 0, NULL, &numDevices);
 		CheckOpenCLError(err, __LINE__);
 		(*device_id)[i] = malloc(numDevices * sizeof(cl_device_id));
+		err = clGetDeviceIDs((*platform)[i], CL_DEVICE_TYPE_ALL, numDevices, (*device_id)[i], NULL);
+		CheckOpenCLError(err, __LINE__);
 		for (int j = 0; j < numDevices; j++) {
-			err |= clGetDeviceIDs((*platform)[i], CL_DEVICE_TYPE_ALL, numDevices, &((*device_id)[i][j]), NULL);
-			CheckOpenCLError(err, __LINE__);
 			char deviceName[200];
 			clGetDeviceInfo((*device_id)[i][j], CL_DEVICE_NAME, sizeof(deviceName), deviceName, NULL);
 			printf("---OpenCL:    Device found %d. %s\n", j, deviceName);
 			cl_ulong maxAlloc;
 			clGetDeviceInfo((*device_id)[i][j], CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(maxAlloc), &maxAlloc, NULL);
 			printf("---OpenCL:       CL_DEVICE_MAX_MEM_ALLOC_SIZE: %lu MB\n", maxAlloc/1024/1024);
+			cl_uint cacheLineSize;
+			clGetDeviceInfo((*device_id)[i][j], CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE, sizeof(cacheLineSize), &cacheLineSize, NULL);
+			printf("---OpenCL:       CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE: %u B\n", cacheLineSize);
 		}
 	}
 
-	// HERE WE NEED TO HAVE SPECIFIED A PLATFORM AND DEVICE
+	// HERE WE NEED TO HAVE SPECIFIED A PLATFORM AND DEVICE IN runparams.h
 	printf("\n---OpenCL: Using platform %d, device %d\n", PLATFORM, DEVICE);
 	//create a context
 	*context = clCreateContext(NULL, 1, &((*device_id)[PLATFORM][DEVICE]), NULL, NULL, &err);
@@ -404,7 +467,11 @@ int InitialiseCLEnvironment(cl_platform_id **platform, cl_device_id ***device_id
 
 	//build program executable
 //	printf("Building CL Executable...\n");
-	err = clBuildProgram(*program, 0, NULL, "-I src/runparams.h", NULL, NULL);
+#if DOUBLEPREC == 1
+	err = clBuildProgram(*program, 0, NULL, "-I. -I src", NULL, NULL);
+#else
+	err = clBuildProgram(*program, 0, NULL, "-I. -I src -cl-single-precision-constant", NULL, NULL);
+#endif
 	if (err != CL_SUCCESS) {
 		printf("Error in clBuildProgram: %d, line %d.\n", err, __LINE__);
 		char buffer[5000];

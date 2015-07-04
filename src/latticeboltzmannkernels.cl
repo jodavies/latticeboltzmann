@@ -1,8 +1,9 @@
-#include "src/runparams.h"
+#include "runparams.h"
 
 
-__kernel void ApplySourceKernel(__global real_t *f,
-                                __global const int *walls)
+__kernel __attribute__((reqd_work_group_size(LOCALSIZE, 1, 1))) __attribute__((vec_type_hint(real_t)))
+void ApplySourceKernel(__global real_t * restrict f,
+                                __global const int * restrict walls)
 {
 	// fetch id
 	int i = get_global_id(0);
@@ -30,24 +31,24 @@ __kernel void ApplySourceKernel(__global real_t *f,
 
 
 
-__kernel void StreamCollideKernel(__global const real_t *fSrc,
-                                  __global real_t *fDst,
-                                  __global const int *walls)
+__kernel  __attribute__((reqd_work_group_size(LOCALSIZE, 1, 1))) __attribute__((vec_type_hint(real_t)))
+void StreamCollideKernel(__global const real_t * restrict fSrc,
+                                  __global real_t * restrict fDst,
+                                  __global const int * restrict walls)
 {
-	// fetch ids
-	int i = get_global_id(1);
-	int j = get_global_id(0);
+	// determine indices
+	size_t i = get_global_id(0)/NY;
+	size_t j = get_global_id(0)%NY;
 
 	if (i >= NX) return;
-	if (j >= NY) return;
 
 	real_t fTmp[NSPEEDS];
 
 	// pull values from neighbouring lattice points to fTmp
-	int x_u = (i + 1) % NX;
-	int x_d = (i == 0) ? (NX - 1) : (i - 1);
-	int y_r = (j + 1) % NY;
-	int y_l = (j == 0) ? (NY - 1) : (j - 1);
+	size_t x_u = (i + 1) % NX;
+	size_t x_d = (i == 0) ? (NX - 1) : (i - 1);
+	size_t y_r = (j + 1) % NY;
+	size_t y_l = (j == 0) ? (NY - 1) : (j - 1);
 	fTmp[0] = fSrc[I(i  ,j  , 0)];
 	fTmp[1] = fSrc[I(i  ,y_l, 1)];
 	fTmp[2] = fSrc[I(x_d,j  , 2)];
@@ -113,4 +114,45 @@ __kernel void StreamCollideKernel(__global const real_t *fSrc,
 		}
 	}
 
+}
+
+
+
+__kernel  __attribute__((reqd_work_group_size(LOCALSIZE, 1, 1))) __attribute__((vec_type_hint(real_t)))
+void ComputeSquaredDensityKernel(__global const real_t * restrict fSrc,
+                           __global real_t * restrict printArray)
+{
+	// determine indices
+	size_t i = get_global_id(0)/NY;
+	size_t j = get_global_id(0)%NY;
+
+	if (i >= NX) return;
+
+	real_t fTmp[NSPEEDS];
+
+	// pull values from THIS lattice point.
+	fTmp[0] = fSrc[I(i,j, 0)];
+	fTmp[1] = fSrc[I(i,j, 1)];
+	fTmp[2] = fSrc[I(i,j, 2)];
+	fTmp[3] = fSrc[I(i,j, 3)];
+	fTmp[4] = fSrc[I(i,j, 4)];
+	fTmp[5] = fSrc[I(i,j, 5)];
+	fTmp[6] = fSrc[I(i,j, 6)];
+	fTmp[7] = fSrc[I(i,j, 7)];
+	fTmp[8] = fSrc[I(i,j, 8)];
+
+
+	real_t density = 0;
+	for (int s = 0; s < NSPEEDS; s++) {
+		density += fTmp[s];
+	}
+
+	real_t u_x = (+(fTmp[6]+fTmp[2]+fTmp[5])
+					  -(fTmp[7]+fTmp[4]+fTmp[8]))/density;
+	real_t u_y = (+(fTmp[5]+fTmp[1]+fTmp[8])
+					  -(fTmp[6]+fTmp[3]+fTmp[7]))/density;
+
+	real_t uDotu = u_x * u_x + u_y * u_y;
+
+	printArray[I(i,j, 0)] = uDotu;
 }
